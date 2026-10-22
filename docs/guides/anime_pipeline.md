@@ -38,7 +38,16 @@ To resolve this, KohakuGBC provides an automated two-stage pipeline:
 
 ## 2. Quick Start
 
-### 2.1 One-Click Pipeline Execution
+### 2.1 Prerequisites & Dependencies
+
+In addition to standard KohakuGBC dependencies (`torch` extra for detectors and embedders), the anime pipeline requires `onnxruntime` (or `onnxruntime-gpu`) and optional `huggingface_hub` for automatic tagger weights resolution:
+
+```bash
+# Install with anime extra dependencies
+pip install -e ".[anime,torch]"
+```
+
+### 2.2 One-Click Pipeline Execution
 
 Run the complete pipeline on a single image (supports Windows paths `C:\...` or Linux paths `/mnt/c/...`):
 
@@ -53,7 +62,7 @@ Run the complete pipeline on a single image (supports Windows paths `C:\...` or 
 .venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --no-gbc
 ```
 
-### 2.2 Output Structure
+### 2.3 Output Structure
 
 Each run automatically creates a dedicated, isolated directory under `runs/`:
 - **Single image:** `runs/<image_name>_<YYYYMMDD_HHMMSS>/`
@@ -68,7 +77,7 @@ Inside the run directory:
 > [!TIP]
 > A symlink `runs/latest` is automatically created and updated on every run. You can always inspect the newest result at `runs/latest/graphs.jsonl` or `runs/latest/viewer.html`.
 
-### 2.3 CLTagger Model Resolution
+### 2.4 CLTagger Model Resolution
 
 `scripts/cl_gbc_pipeline.py` includes a standalone ONNX inference implementation (requiring only `onnxruntime`, `numpy`, and `Pillow`, with zero external project dependencies).
 
@@ -144,7 +153,7 @@ engines = {
         "entry": "api",
         "protocol": "openai",
         "flavour": "llama.cpp",
-        "model": "/usr/local/gguf/qwen3.5-9b/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf",
+        "model": "Qwen/Qwen2.5-VL-7B-Instruct",
         "endpoints": [{"base_url": "http://127.0.0.1:8080/v1", "max_inflight": 4}],
     },
     "detect": {
