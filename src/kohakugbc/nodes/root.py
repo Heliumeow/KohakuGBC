@@ -48,9 +48,32 @@ def root_mode(controls: dict, captions, tags) -> str:
 # ---- image query --------------------------------------------------------------------------------
 
 
+def hint_tags(tags, threshold: float) -> list[str]:
+    if not tags:
+        return []
+    collected = []
+    # Collect character, copyright, and general tags in priority order
+    for cat in ("character", "copyright", "general"):
+        bucket = (tags or {}).get(cat) or {}
+        if isinstance(bucket, dict):
+            for t, conf in sorted(bucket.items(), key=lambda kv: -kv[1]):
+                if conf >= threshold and t not in collected:
+                    collected.append(t)
+        elif isinstance(bucket, list):
+            for t in bucket:
+                if t not in collected:
+                    collected.append(t)
+    if not collected and isinstance(tags, dict):
+        for t, conf in sorted(tags.items(), key=lambda kv: -kv[1] if isinstance(kv[1], (int, float)) else 0):
+            if not isinstance(conf, (int, float)) or conf >= threshold:
+                collected.append(t)
+    return collected
+
+
 @node(outputs=["request"])
-def image_query_request(image: dict, patch, controls: dict) -> dict:
-    return specs.image_query(image["key"], patch, controls)
+def image_query_request(image: dict, tags, patch, controls: dict) -> dict:
+    hint = hint_tags(tags, controls["tag_threshold"]) if controls.get("tag_hint") else []
+    return specs.image_query(image["key"], patch, controls, tags=hint)
 
 
 @node(outputs=["root"])

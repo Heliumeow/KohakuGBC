@@ -52,12 +52,21 @@ def prompt_set(controls: dict) -> str:
 # ---- root --------------------------------------------------------------------------------------
 
 
-def image_query(image_key: str, patch, controls: dict) -> dict:
+def image_query(image_key: str, patch, controls: dict, tags: list[str] | None = None) -> dict:
     spec = prompt_set(controls)
+    q = prompt(spec, "query_image")
+    if tags:
+        tag_line = (
+            f"\nPreliminary visual tags from anime classifier (reference hints): {', '.join(t.replace('_', ' ') for t in tags)}\n"
+            "Note: In the detailed caption, accurately identify the character and elements by their specific names and series (e.g. \"Leizi The Thunderbringer from Arknights\"). "
+            "For detectable element names and brackets in concise caption, use standard visual object nouns (such as \"warrior\" or \"girl\", \"sword\", \"horns\", \"beast\") so object detection models can locate them.\n"
+        )
+        q = f"{q}\n{tag_line}"
+    extra = {"tag_hint": True} if tags else {}
     return request(
-        trace.vlm_key("image_query", spec, image_key),
+        trace.vlm_key("image_query", spec, image_key, **extra),
         prompt(spec, "system_image"),
-        prompt(spec, "query_image"),
+        q,
         [[None, patch]],
         "image.json",
         MAX_TOKENS["image_query"],

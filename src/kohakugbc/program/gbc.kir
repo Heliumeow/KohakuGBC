@@ -31,7 +31,7 @@
     by_query:
         @hint lane="cpu"
         (image, None, controls)picture(patch)
-        (image, patch, controls)image_query_request(request)
+        (image, tags, patch, controls)image_query_request(request)
         (request)ask(answer)
         (image, answer)image_root(root)
     by_text:

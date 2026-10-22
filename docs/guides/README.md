@@ -5,3 +5,4 @@ Running GBC on a folder of images, configuring the engines, and writing an engin
 | Page | Covers |
 |---|---|
 | [engines.md](engines.md) | the VLM over an API, in-process (vLLM, the qwen35 example), the vision models, replay, engines on other nodes, CPU workers |
+| [anime_pipeline.md](anime_pipeline.md) | two-stage anime tagging pipeline (CLTagger prior injection), automated run scripts, and the interactive HTML visualizer |
