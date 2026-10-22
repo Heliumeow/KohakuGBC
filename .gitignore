@@ -1,5 +1,6 @@
 plans/
 runs/
+models/
 cache/
 __pycache__/
 *.py[cod]

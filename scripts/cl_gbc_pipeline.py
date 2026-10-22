@@ -83,8 +83,7 @@ def resolve_cltagger_model(custom_dir: Path | str | None = None) -> tuple[Path, 
         candidates.append(Path(os.environ["CLTAGGER_DIR"]))
     candidates.append(WORKSPACE_ROOT / "models" / "cltagger" / "v2_01a")
     candidates.append(WORKSPACE_ROOT / "models" / "cltagger")
-    # Optional local fallback cache if present
-    candidates.append(Path("/usr/local/AnimaLoraStudio/models/cltagger/cella110n_cl_tagger_v2/v2_01a"))
+    candidates.append(Path.home() / ".cache" / "cltagger" / "v2_01a")
 
     for c in candidates:
         model_p = c / "model.onnx"

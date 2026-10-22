@@ -1,13 +1,18 @@
-# Test machine configuration using llama-server (OpenAI API flavour) for VLM
-# and local CPU models for detect & embed to prevent VRAM contention with llama-server.
+# Local GPU machine configuration using llama-server (OpenAI API flavour) for VLM
+# with OWLv2 detector and EmbeddingGemma on GPU for fast anime scene graph generation.
+
+import os
+
+_VLM_MODEL = os.environ.get("VLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+_VLM_ENDPOINT = os.environ.get("VLM_ENDPOINT", "http://127.0.0.1:8080/v1")
 
 engines = {
     "vlm": {
         "entry": "api",
         "protocol": "openai",
         "flavour": "llama.cpp",
-        "model": "/usr/local/gguf/qwen3.5-9b/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf",
-        "endpoints": [{"base_url": "http://127.0.0.1:8080/v1", "max_inflight": 4}],
+        "model": _VLM_MODEL,
+        "endpoints": [{"base_url": _VLM_ENDPOINT, "max_inflight": 4}],
     },
     "detect": {
         "entry": "torch",
