@@ -68,6 +68,16 @@ Inside the run directory:
 > [!TIP]
 > A symlink `runs/latest` is automatically created and updated on every run. You can always inspect the newest result at `runs/latest/graphs.jsonl` or `runs/latest/viewer.html`.
 
+### 2.3 CLTagger Model Resolution
+
+`scripts/cl_gbc_pipeline.py` includes a standalone ONNX inference implementation (requiring only `onnxruntime`, `numpy`, and `Pillow`, with zero external project dependencies).
+
+The script locates the model files (`model.onnx`, `model.onnx.data`, `model_vocabulary.json`) in the following order:
+1. User-specified path via `--cltagger-dir /path/to/model_dir`
+2. Environment variable `CLTAGGER_DIR`
+3. Local workspace directory `models/cltagger/v2_01a`
+4. Auto-download from HuggingFace Hub: [`cella110n/cl_tagger_v2`](https://huggingface.co/cella110n/cl_tagger_v2) (via `huggingface_hub`)
+
 ---
 
 ## 3. Interactive Scene Graph Visualizer
