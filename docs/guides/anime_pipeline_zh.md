@@ -234,3 +234,75 @@ detections = ensemble.detect("path/to/image.png")
 | **YOLO 局部模型群** | `Eyes.pt`, `adetailer2dMouth_v10.pt` 等 | ~180 MB | 毫秒级轻量推理，按需载入显存 |
 
 通过这种显存精细切分，单张 12GB 显卡即可在显存不溢出的前提下，同时流畅运行全套二次元多阶段打标流水线。
+
+---
+
+## 9. OpenMOSS-Image 布局导出与 LoRA 数据集打标工程
+
+### 9.1 MOSS 规范与 GBC 图结构的本质差异
+
+OpenMOSS-Image 采用了紧凑的二维空间布局条件机制（通过 `skills/moss-image-prompt-enhancer/scripts/compile_prompt.py` 严格校验与中心化编译）。与 KohakuGBC 的分层场景图相比，MOSS 的输入模式具有以下核心特征：
+
+- **严格的平面 Schema**：仅允许包含 `summary`（全局）与扁平 `items` 数组。任何 `children`、`parent`、`id`、`confidence`、`relations`、`elements` 等字段均会被编译器直接报错拒绝。
+- **收敛的实体类别**：每个 item 的 `label` 必须且仅能为 `("character", "object", "text")` 之一。
+- **16 像素硬对齐与坐标中心化**：画布 `width` 和 `height` 必须是 16 的正整数倍；Draft 阶段为绝对像素 `[x1, y1, x2, y2]`，编译后转换为以画布中心为原点的相对像素 `[-H/2, -W/2, H/2, W/2]`（`yxyx` 顺序）。
+
+### 9.2 为什么 GBC 的 Relations 与 Compositions 会干扰 MOSS 训练？
+
+1. **空间注意力的恶性竞争 (Cross-Attention Contention & Feature Bleeding)**：
+   在扩散模型中，BBox 对应的是空间交叉注意力的掩码或 RoPE 编码。若将 GBC 的父节点（如 Character 全身框）与其子节点（如 Eyes、Mouth 微观框）在同一个平面列表中同时送入模型：
+   - 眼睛像素同时被“全身特征文本”与“眼部细节文本”反复争抢，导致梯度撕裂。
+   - 生成时极易在微观框边界出现明显的矩形伪影或五官糊化。
+2. **拓扑关系的非物理几何性**：
+   GBC 的 `relations`（如 `holding`, `standing on`, `part of`）是语义图边，在物理图像空间中**没有独立的包围盒**。若强行赋予虚假包围盒，会引入几何幻觉；若机械拼接到全局文本中，会产生无语法的机械垃圾词。
+3. **密集框诱发的归纳偏置过拟合 (Layout Bias & Degradation)**：
+   如果训练集全被密集的微观器官框填满，LoRA 会学到一种坏习惯——“没有给定眼部框就不画眼睛”。当终端用户只输入宏观布局或纯文本时，生成质量会大幅退化。
+
+### 9.3 针对 MOSS LoRA 的最优打标与工程方案
+
+KohakuGBC 内置了专门的 `scripts/anime_pipeline/moss_exporter.py` 转换器，实现了三大核心机制：
+
+#### 1. 语义自然语言融合 (Relation & Metadata Absorption)
+- **关系融合**：将图结构中的交互关系（动作、相对方位）自动改写为主谓宾通顺的自然语言短句，自然融入 `summary.caption` 中。
+- **风格元标签**：将 CLTagger 产出的作品名、作者、艺术媒介映射入 `summary.meta`（如 `["persona 3", "anime illustration"]`）。
+
+#### 2. 三大合法标签精准映射
+- **人物主体** $\to$ `label: "character"`。
+- **微观器官与独立道具**（eyes, mouth, jewelry, weapons 等） $\to$ `label: "object"`，并在 `caption` 中注入高辨识度的局部视觉描述（如由 VLM 局部看图生成的瞳孔光泽与唇部弧度）。
+- **画面台词与标语** $\to$ `label: "text"`，并强制提供 `"text": "实际台词内容"`。
+
+#### 3. 金字塔多粒度过滤 (Pyramid Disentanglement)
+通过 `--moss-granularity` 解决空间冲突：
+- `macro`（推荐全局微调，默认）：仅保留人物主体与宏观道具，通过 IoS（包围盒面积包含比）自动剪除深层嵌套的子器官框，防止注意力竞争。
+- `fine`（推荐部件微调）：保留微观五官与首饰，并**自动剔除包裹它们的外部大框**，让局部像素专属学习高精细节。
+- `pyramid`（多尺度混合）：同时输出 `macro` 与 `fine` 两个版本，供混合构建丰富数据集。
+- `dropout`（纯文本回退）：生成仅含 `summary.caption` 的纯文本样本，建议在 LoRA 训练中按 10%~20% 比例混入，保持底模的无框自由生成能力。
+
+### 9.4 命令行与代码调用
+
+#### 命令行执行：
+```bash
+# 生成包含宏观与细节两套 MOSS 数据集的流水线
+.venv/bin/python scripts/cl_gbc_pipeline.py <IMAGE_PATH> --no-gbc --export-moss --moss-granularity pyramid
+```
+
+执行后将在输出目录自动产出：
+- `moss_draft_macro.jsonl` / `moss_draft_fine.jsonl`：完全合规的人类可读布局 Draft。
+- `moss_compiled_macro.jsonl` / `moss_compiled_fine.jsonl`：预先经过官方校验并中心化编译的 MOSS 一行式训练 Prompt。
+
+#### Python 模块调用：
+```python
+from scripts.anime_pipeline import (
+    compile_moss_prompt,
+    export_moss_dataset,
+    graph_to_moss_draft,
+)
+
+# 转换单个场景图
+draft = graph_to_moss_draft(graph_data, granularity="macro")
+
+# 严格编译并校验 Prompt
+moss_prompt_line = compile_moss_prompt(draft)
+```
+
+

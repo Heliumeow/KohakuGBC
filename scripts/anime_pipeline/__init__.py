@@ -14,6 +14,12 @@ from __future__ import annotations
 from .cltagger import StandaloneCLTagger, extract_copyright_from_character, resolve_cltagger_model, run_cl_tagger
 from .gbc_runner import check_vlm_reachability, print_summary, run_gbc
 from .graph_builder import build_fast_yolo_graph, merge_yolo_to_graph
+from .moss_exporter import (
+    align_dimension_16,
+    compile_moss_prompt,
+    export_moss_dataset,
+    graph_to_moss_draft,
+)
 from .utils import WORKSPACE_ROOT, collect_images, normalize_path
 from .vlm_descriptor import describe_yolo_detections, extract_caption_from_reasoning, parse_vlm_json
 from .yolo import DEFAULT_PRESETS, UltralyticsEnsemble, load_presets, resolve_auto_preset
@@ -38,4 +44,8 @@ __all__ = [
     "check_vlm_reachability",
     "run_gbc",
     "print_summary",
+    "compile_moss_prompt",
+    "graph_to_moss_draft",
+    "export_moss_dataset",
+    "align_dimension_16",
 ]

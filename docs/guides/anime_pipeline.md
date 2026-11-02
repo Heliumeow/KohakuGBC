@@ -260,3 +260,34 @@ engines = {
 }
 ```
 
+---
+
+## 5. OpenMOSS-Image Layout Export & LoRA Dataset Curation
+
+### 5.1 OpenMOSS Layout Specification
+OpenMOSS-Image expects a clean, flat spatial layout prompt verified by `compile_prompt.py`:
+- Root schema: `width`, `height` (multiples of 16), `bbox_coord_space` (`"abs"`), `bbox_format` (`"xyxy"`), `summary`, `items`.
+- Allowed labels: strictly `("character", "object", "text")`. Any unknown field or label is rejected.
+- Centralized compiler coordinates: `yxyx` centered around `[-H/2, -W/2, H/2, W/2]`.
+
+### 5.2 Why Raw GBC Relations & Compositions Cause Attention Contention
+- **Cross-Attention Bleeding:** Dumping both parent character bounding boxes and nested organ boxes (eyes, mouth) into a flat items list forces cross-attention to contest over the exact same pixel coordinates, creating boundary artifacts and blurry facial details.
+- **Non-Physical Topology:** GBC relations (`holding`, `part of`) have no physical bounding boxes. Naive concatenation ruins prompt fluency.
+
+### 5.3 Anti-Contention Pyramid Filtering
+`moss_exporter.py` introduces multi-granularity export:
+- `--moss-granularity macro`: Preserves macro entities and distinct props, pruning nested sub-organs to prevent attention contention.
+- `--moss-granularity fine`: Retains detailed sub-parts (eyes, mouth, jewelry) and suppresses enclosing parent boxes so regional pixels focus exclusively on high-resolution details.
+- `--moss-granularity pyramid`: Exports both macro and fine drafts for multi-scale LoRA training.
+- `--moss-granularity dropout`: Produces caption-only drafts for baseline text-to-image retention.
+
+### 5.4 CLI Usage
+```bash
+.venv/bin/python scripts/cl_gbc_pipeline.py <IMAGE_PATH> --no-gbc --export-moss --moss-granularity pyramid
+```
+Outputs:
+- `runs/latest/moss_draft_macro.jsonl`
+- `runs/latest/moss_compiled_macro.jsonl`
+- `runs/latest/moss_draft_fine.jsonl`
+- `runs/latest/moss_compiled_fine.jsonl`
+

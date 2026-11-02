@@ -35,6 +35,7 @@ try:
         check_vlm_reachability,
         collect_images,
         describe_yolo_detections,
+        export_moss_dataset,
         merge_yolo_to_graph,
         print_summary,
         run_cl_tagger,
@@ -47,11 +48,33 @@ except ImportError:
         check_vlm_reachability,
         collect_images,
         describe_yolo_detections,
+        export_moss_dataset,
         merge_yolo_to_graph,
         print_summary,
         run_cl_tagger,
         run_gbc,
     )
+
+
+def _maybe_export_moss(args: argparse.Namespace, graphs_file: Path, output_dir: Path) -> None:
+    """Conditionally export scene graphs to OpenMOSS Layout format."""
+    if not args.export_moss:
+        return
+    print("\n[*] Exporting OpenMOSS Layout dataset...")
+    all_graphs = []
+    with open(graphs_file, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                all_graphs.append(json.loads(line))
+    if not all_graphs:
+        print("[!] No scene graphs found to export for MOSS.", file=sys.stderr)
+        return
+
+    granularities = ["macro", "fine"] if args.moss_granularity == "pyramid" else [args.moss_granularity]
+    for gran in granularities:
+        d_file, c_file = export_moss_dataset(all_graphs, output_dir, granularity=gran)
+        print(f"[+] MOSS Draft ({gran}):    {d_file}")
+        print(f"[+] MOSS Compiled ({gran}): {c_file}")
 
 
 def _generate_html_viewer(graphs_file: Path, output_dir: Path, latest_symlink: Path) -> None:
@@ -99,6 +122,13 @@ def main() -> None:
     parser.add_argument("--yolo-device", default="auto", help="Device for YOLO models: 'auto', 'cuda:0', or 'cpu' (default: auto)")
     parser.add_argument("--describe-yolo", action=argparse.BooleanOptionalAction, default=True, help="Use VLM to describe YOLO-detected regions in detail (default: True)")
     parser.add_argument("--yolo-vlm-workers", type=int, default=4, help="Concurrent workers for VLM crop descriptions (default: 4)")
+    parser.add_argument("--export-moss", action="store_true", help="Export dataset in OpenMOSS Layout draft & compiled prompt format")
+    parser.add_argument(
+        "--moss-granularity",
+        choices=["macro", "fine", "all", "pyramid", "dropout"],
+        default="macro",
+        help="Granularity for MOSS export: 'macro' (default), 'fine', 'all', 'pyramid' (macro+fine), or 'dropout'",
+    )
     args = parser.parse_args()
 
     # Collect images
@@ -214,6 +244,7 @@ def main() -> None:
         print(f"[+] Fast Graphs:      {graphs_file}")
         print(f"[+] Latest symlink:   {latest_symlink / 'graphs.jsonl'}")
 
+        _maybe_export_moss(args, graphs_file, output_dir)
         _generate_html_viewer(graphs_file, output_dir, latest_symlink)
         return
 
@@ -246,7 +277,10 @@ def main() -> None:
     print(f"[+] Graphs:           {graphs_file}")
     print(f"[+] Latest symlink:   {latest_symlink / 'graphs.jsonl'}")
 
-    # Stage 4: Auto-generate interactive HTML viewer
+    # Stage 4: OpenMOSS Export (if requested)
+    _maybe_export_moss(args, graphs_file, output_dir)
+
+    # Stage 5: Auto-generate interactive HTML viewer
     _generate_html_viewer(graphs_file, output_dir, latest_symlink)
 
 
