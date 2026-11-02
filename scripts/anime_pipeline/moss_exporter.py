@@ -170,11 +170,13 @@ def _compute_box_overlap(box_a: list[int], box_b: list[int]) -> float:
     return intersection / b_area
 
 
-def _clean_caption_text(desc_item: dict | str, cls_fallback: str = "item") -> str:
+def _clean_caption_text(desc_item: dict | str, cls_fallback: str = "item", language: str = "zh") -> str:
     """Extract clean, descriptive text removing raw detector logs."""
     raw = desc_item.get("text", "") if isinstance(desc_item, dict) else str(desc_item)
     if not raw or not raw.strip():
         readable = cls_fallback.replace("_", " ").strip()
+        if language == "zh":
+            return f"清晰生动的二次元【{readable}】表现。"
         return f"A distinct anime {readable}."
 
     # If already a high-quality VLM description
@@ -183,16 +185,26 @@ def _clean_caption_text(desc_item: dict | str, cls_fallback: str = "item") -> st
         if len(clean) > 5 and not clean.startswith("Character"):
             return clean
 
-    # Strip detector template strings (e.g. "Character mouth detected via adetailer2dMouth_v10.pt (confidence: 0.86).")
+    # Strip detector template strings (Chinese / English)
+    m_zh = re.search(r"角色【?([\w\-]+)】?通过模型.*检测识别", raw)
+    if m_zh:
+        part_name = m_zh.group(1).replace("_", " ")
+        return f"二次元角色【{part_name}】特写细节。"
+
     m = re.search(r"Character\s+([\w\-]+)\s+detected\s+via", raw, re.IGNORECASE)
     if m:
         part_name = m.group(1).replace("_", " ")
+        if language == "zh":
+            return f"二次元角色【{part_name}】特写细节。"
         return f"Close-up depiction of character {part_name}."
 
     cleaned = re_detector_source.sub("", raw).strip()
     if not cleaned or len(cleaned) < 3:
         readable = cls_fallback.replace("_", " ").strip()
-        cleaned = f"A visible anime {readable}."
+        if language == "zh":
+            cleaned = f"清晰可见的动漫【{readable}】细节。"
+        else:
+            cleaned = f"A visible anime {readable}."
     return cleaned
 
 
@@ -209,6 +221,7 @@ def graph_to_moss_draft(
     granularity: str = "macro",
     target_canvas: tuple[int, int] | None = None,
     meta_tags: list[str] | None = None,
+    language: str = "zh",
 ) -> dict:
     """Convert GBC scene graph into a strictly compliant OpenMOSS Layout draft.
 
@@ -221,15 +234,17 @@ def graph_to_moss_draft(
             - 'dropout': Caption-only draft for text-only baseline retention.
         target_canvas: Optional explicit (width, height) multiples of 16.
         meta_tags: Optional medium/genre strings for summary.meta.
+        language: 'zh' (Chinese) or 'en' (English).
 
     Returns:
         A draft dict compliant with OpenMOSS layout.md.
     """
     # 1. Summary Caption & Meta
+    default_caption = "精美的二次元动漫数码插画。" if language == "zh" else "An anime digital illustration."
     summary_caption = (
         graph_data.get("detail_caption")
         or graph_data.get("short_caption")
-        or "An anime digital illustration."
+        or default_caption
     ).strip()
 
     # Absorb semantic relations (excluding structural 'contains' or 'part of')
@@ -239,12 +254,17 @@ def graph_to_moss_draft(
         src = edge.get("source", "").strip()
         tgt = edge.get("target", "").strip()
         if rel and rel not in ("contains", "part of", "inside", "has part", "submask"):
-            clean_rel = f"{src} {rel} {tgt}".replace("_", " ").strip()
+            if language == "zh":
+                clean_rel = f"{src} 与 {tgt} 关联：{rel}".replace("_", " ").strip()
+            else:
+                clean_rel = f"{src} {rel} {tgt}".replace("_", " ").strip()
             if len(clean_rel) > 4:
                 rel_clauses.append(clean_rel)
 
     if rel_clauses:
-        summary_caption = f"{summary_caption} With {'; '.join(rel_clauses[:3])}."
+        sep = "；" if language == "zh" else "; "
+        prefix = "包含关联特征：" if language == "zh" else "With "
+        summary_caption = f"{summary_caption} {prefix}{sep.join(rel_clauses[:3])}。"
 
     if granularity == "dropout":
         return {"caption": summary_caption}
@@ -328,9 +348,12 @@ def graph_to_moss_draft(
                 caption_text = d.get("text", "")
                 break
         if not caption_text and descs:
-            caption_text = _clean_caption_text(descs[0], cls_fallback=vid)
+            caption_text = _clean_caption_text(descs[0], cls_fallback=vid, language=language)
         if not caption_text:
-            caption_text = f"An anime {item_label} representing {vid.replace('_', ' ')}."
+            if language == "zh":
+                caption_text = f"二次元动漫【{vid.replace('_', ' ')}】表现。"
+            else:
+                caption_text = f"An anime {item_label} representing {vid.replace('_', ' ')}."
 
         # Compute area
         area = (x2 - x1) * (y2 - y1)
@@ -417,6 +440,7 @@ def export_moss_dataset(
     output_dir: Path,
     granularity: str = "macro",
     target_canvas: tuple[int, int] | None = None,
+    language: str = "zh",
 ) -> tuple[Path, Path]:
     """Export scene graphs to validated MOSS draft JSONL and compiled prompt JSONL.
 
@@ -434,14 +458,17 @@ def export_moss_dataset(
         # Extract meta genres from tags if present
         meta_tags = None
         if "detail_caption" in g:
-            # extract basic medium tag
-            meta_tags = ["anime illustration", "digital media"]
+            if language == "zh":
+                meta_tags = ["二次元插画", "数码立绘", "动漫画风"]
+            else:
+                meta_tags = ["anime illustration", "digital media"]
 
         draft = graph_to_moss_draft(
             graph_data=g,
             granularity=granularity,
             target_canvas=target_canvas,
             meta_tags=meta_tags,
+            language=language,
         )
 
         # Validate with official compiler

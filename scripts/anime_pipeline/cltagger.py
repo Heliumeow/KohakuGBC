@@ -115,6 +115,7 @@ def run_cl_tagger(
     results: list[dict] = []
     print(f"[*] Running CLTagger on {len(images)} image(s)...")
     for img_p in images:
+        img_p = Path(img_p)
         raw_scores = tagger.tag_image(img_p)
 
         char_candidates: dict[str, float] = {}

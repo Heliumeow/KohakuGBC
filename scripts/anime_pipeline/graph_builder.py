@@ -97,7 +97,12 @@ def merge_yolo_to_graph(graph_data: dict, yolo_detections: list[dict]) -> dict:
     return graph_data
 
 
-def build_fast_yolo_graph(img_path: Path, tag_item: dict, yolo_dets: list[dict]) -> dict:
+def build_fast_yolo_graph(
+    img_path: Path,
+    tag_item: dict,
+    yolo_dets: list[dict],
+    language: str = "zh",
+) -> dict:
     """Build a lightweight scene graph from CLTagger tags and YOLO detections without running VLM/GBC."""
     tags_info = tag_item.get("tags", {})
     char_dict = tags_info.get("character", {})
@@ -108,12 +113,20 @@ def build_fast_yolo_graph(img_path: Path, tag_item: dict, yolo_dets: list[dict])
     sorted_copys = [t for t, _ in sorted(copy_dict.items(), key=lambda kv: -kv[1])]
     sorted_gens = [t for t, _ in sorted(gen_dict.items(), key=lambda kv: -kv[1])][:15]
 
-    char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "Anime character"
-    copy_str = f" from {', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}" if sorted_copys else ""
-    top_tags_str = ", ".join(t.replace("_", " ") for t in sorted_gens)
-
-    detail_cap = f"{char_str}{copy_str}. Visual features: {top_tags_str}."
-    short_cap = char_str
+    if language == "zh":
+        char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "二次元动漫角色"
+        copy_str = f"（出自《{', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}》）" if sorted_copys else ""
+        top_tags_str = "、".join(t.replace("_", " ") for t in sorted_gens)
+        detail_cap = f"{char_str}{copy_str}的二次元动漫插画。画面主要特征包括：{top_tags_str}。"
+        short_cap = char_str
+        char_desc_text = f"二次元角色【{char_str}】{copy_str}。"
+    else:
+        char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "Anime character"
+        copy_str = f" from {', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}" if sorted_copys else ""
+        top_tags_str = ", ".join(t.replace("_", " ") for t in sorted_gens)
+        detail_cap = f"{char_str}{copy_str}. Visual features: {top_tags_str}."
+        short_cap = char_str
+        char_desc_text = f"Character {char_str}{copy_str}."
 
     root_vertex = {
         "vertex_id": "",
@@ -157,7 +170,7 @@ def build_fast_yolo_graph(img_path: Path, tag_item: dict, yolo_dets: list[dict])
         "vertex_id": char_vid,
         "label": "entity",
         "bbox": char_bbox,
-        "descs": [{"text": f"Character {char_str}{copy_str}."}],
+        "descs": [{"text": char_desc_text}],
     })
     graph["edges"].append({"source": "", "target": char_vid, "relation": "contains"})
 

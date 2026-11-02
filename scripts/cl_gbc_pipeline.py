@@ -72,7 +72,7 @@ def _maybe_export_moss(args: argparse.Namespace, graphs_file: Path, output_dir: 
 
     granularities = ["macro", "fine"] if args.moss_granularity == "pyramid" else [args.moss_granularity]
     for gran in granularities:
-        d_file, c_file = export_moss_dataset(all_graphs, output_dir, granularity=gran)
+        d_file, c_file = export_moss_dataset(all_graphs, output_dir, granularity=gran, language=args.language)
         print(f"[+] MOSS Draft ({gran}):    {d_file}")
         print(f"[+] MOSS Compiled ({gran}): {c_file}")
 
@@ -128,6 +128,14 @@ def main() -> None:
         choices=["macro", "fine", "all", "pyramid", "dropout"],
         default="macro",
         help="Granularity for MOSS export: 'macro' (default), 'fine', 'all', 'pyramid' (macro+fine), or 'dropout'",
+    )
+    parser.add_argument(
+        "--language",
+        "--lang",
+        dest="language",
+        choices=["zh", "en"],
+        default="zh",
+        help="Language for prompts, VLM descriptions, and MOSS captions: 'zh' (default, Chinese) or 'en' (English)",
     )
     args = parser.parse_args()
 
@@ -213,6 +221,7 @@ def main() -> None:
                                 endpoint=vlm_endpoint,
                                 max_workers=args.yolo_vlm_workers,
                                 char_context=char_ctx,
+                                language=args.language,
                             )
                             yolo_results_by_img[img_k] = described_dets
                     yolo_file.write_text(json.dumps(yolo_results_by_img, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -232,7 +241,7 @@ def main() -> None:
         fast_graphs = []
         for item in tag_results:
             img_p = Path(item["image"])
-            fast_g = build_fast_yolo_graph(img_p, item, item.get("spatial_priors", []))
+            fast_g = build_fast_yolo_graph(img_p, item, item.get("spatial_priors", []), language=args.language)
             fast_graphs.append(fast_g)
 
         with open(graphs_file, "w", encoding="utf-8") as f:
