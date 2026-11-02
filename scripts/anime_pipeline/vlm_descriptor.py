@@ -39,9 +39,16 @@ def clean_vlm_text(text: str) -> str:
     if not text:
         return ""
     t = text.strip()
+    # If the model wrapped the actual caption in quotes after self-evaluation thoughts
+    m_quote = re.search(r'["“]([^"”]{10,})["”]', t)
+    if m_quote and any(eval_word in t for eval_word in ["字范围", "符合", "Good", "fits", "Check", "稍微"]):
+        t = m_quote.group(1)
     t = re.sub(r"^.*?->\s*", "", t)
     t = re.sub(r"^\s*\(.*?\)\s*", "", t)
     t = re.sub(r"^Check\s+.*?[.:]\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^Good\.\s*\"?.*?[.:\"]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^Fits well.*?[.:]\s*", "", t, flags=re.IGNORECASE)
+    t = t.strip("\"'“” ")
     return t.strip()
 
 
@@ -98,12 +105,16 @@ def extract_caption_from_reasoning(reasoning: str, cls_name: str, language: str 
         if not s.lower().startswith("the user")
         and not s.lower().startswith("let's")
         and not s.lower().startswith("we need")
+        and not s.lower().startswith("good.")
+        and not s.lower().startswith("check")
         and not s.startswith("用户")
         and not s.startswith("我们需要")
         and not s.startswith("分析")
         and "json" not in s.lower()
         and "caption" not in s.lower()
         and "formatting" not in s.lower()
+        and "fits well" not in s.lower()
+        and (language != "zh" or bool(re.search(r"[\u4e00-\u9fff]", s)))
     ]
     if good_s:
         detailed = " ".join(good_s[-2:])
@@ -229,28 +240,39 @@ def describe_full_image(
 
     if language == "zh":
         system_msg = (
-            "你是一位精通二次元动漫插画、角色美术设计与画面构图分析的资深视觉专家。"
-            "请对输入的整幅二次元图像进行全面、专业且优美生动的视觉分析。"
+            "你是一位精通二次元动漫插画、角色美术设计与场景空间构图的资深视觉分析专家。"
+            "请遵循系统性的视觉分析流程（主体角色造型/服饰/神态 -> 场景建筑与天体环境 -> 整体色彩与光影氛围）进行专业拆解。"
             "请直接输出合法的 JSON 格式结果，严禁输出多余的思考内容。"
         )
         user_msg = (
-            f"请对整幅画面进行系统、生动的二次元视觉分析。\n"
+            f"请对整幅二次元动漫插画进行系统、专业、画面感强的视觉分析：\n"
             f"{tags_hint}"
-            "请直接返回一个合法的 JSON 对象，包含两个键：\n"
-            "- \"detailed_caption\": 2-3 句细腻优美、色彩与光影层次分明的中文画面综合描述。准确涵盖角色神态发型、服饰与动作、以及背景环境与视觉氛围。\n"
-            "- \"short_caption\": 1 句精炼概括（15-25字）。"
+            "【画面分析维度与规则】：\n"
+            "1. 详细长描述 (\"detailed_caption\")：\n"
+            "   - 核心角色主体：准确辨析人物身份、发型发色、瞳色眼妆、神情面貌，服饰款式（剪裁、层叠与材质纹理）及肢体动作手势。\n"
+            "   - 场景与环境空间：建筑透视、自然地貌、天体天象（满月/星空/云雾）与空间纵深感。\n"
+            "   - 色彩光影与特效：主色调、冷暖对比光斑、动态粒子或光束特效、整体视觉张力与艺术风格。\n"
+            "   - 篇幅：2-3 句语言流畅凝练、色彩层次分明的中文综合描写（约100-150字）。\n"
+            "2. 精炼概括短句 (\"short_caption\")：\n"
+            "   - 1 句精炼紧凑概括“主体角色在何种核心场景下的关键姿态与神态”（15-25字）。\n\n"
+            "请直接返回合法的 JSON 对象，包含两个键：\n"
+            "- \"detailed_caption\": 2-3 句中文画面综合描述。\n"
+            "- \"short_caption\": 1 句精炼中文概括短句。"
         )
     else:
         system_msg = (
             "You are an expert anime character and visual art analyzer. "
-            "Conduct a comprehensive visual analysis of the full illustration. "
+            "Conduct a structured visual analysis covering character design, setting, and lighting atmosphere. "
             "Output valid JSON only."
         )
         user_msg = (
             f"Please provide a comprehensive visual analysis of the full anime illustration.\n"
             f"{tags_hint}"
+            "Dimensions to cover:\n"
+            "- Character: hairstyle, eyes, facial expression, attire styling and pose.\n"
+            "- Environment & Lighting: architectural structures, celestial background, color harmony, and atmospheric effects.\n"
             "Return a valid JSON object with exactly two keys:\n"
-            "- \"detailed_caption\": 2-3 detailed, descriptive sentences covering the character, attire, pose, and background environment.\n"
+            "- \"detailed_caption\": 2-3 detailed, descriptive sentences (100-150 words).\n"
             "- \"short_caption\": 1 concise sentence summarizing the main subject and setting (15-25 words)."
         )
 
@@ -336,8 +358,9 @@ def describe_yolo_detections(
         l, t, r, b = box.get("left", 0.0), box.get("top", 0.0), box.get("right", 1.0), box.get("bottom", 1.0)
         bw, bh = max(0.001, r - l), max(0.001, b - t)
 
-        # 15% contextual padding
-        pad_x, pad_y = bw * 0.15, bh * 0.15
+        # Adaptive contextual padding: generous margin for tiny features so VLM sees crisp structure
+        pad_x = max(bw * 0.25, 0.02)
+        pad_y = max(bh * 0.25, 0.02)
         x1 = max(0, int((l - pad_x) * w))
         y1 = max(0, int((t - pad_y) * h))
         x2 = min(w, int((r + pad_x) * w))
@@ -359,19 +382,22 @@ def describe_yolo_detections(
 
             context_header = ""
             if global_context:
-                context_header = f"【整幅画面背景与角色总览】：\n{global_context.strip()}\n\n"
+                context_header = f"【画面全局背景参考】：\n{global_context.strip()}\n\n"
 
             system_msg = (
                 "你是一位精通二次元动漫插画与角色美术特征的资深视觉分析专家。"
-                "针对提供的局部裁剪图像，请以精准、优美、地道的动漫术语描述该细节特征。"
+                "针对提供的局部特写切片，请进行高纯度、高聚焦的细节特征分析。"
                 "请直接输出合法的 JSON 格式结果，严禁输出多余的思考内容。"
             )
             user_msg = (
-                f"{context_header}【局部细节观察任务】：\n"
-                f"请仔细观察从上述整幅画面中裁剪出的{prompt_focus}区域。\n"
-                "结合整图的角色身份、光影色调、构图氛围与服饰神态，详细描述该局部细节的视觉外观（如色彩明暗、反光高光、线条唇形/瞳孔细节、神态表情或材质纹理）。\n"
-                "直接返回一个合法的 JSON 对象，且仅包含两个键：\n"
-                "- \"detailed_caption\": 1-2 句细腻生动、符合二次元美术风格的中文视觉特征描写。\n"
+                f"{context_header}【局部特征分析任务（纯度聚焦）】：\n"
+                f"请仔细观察从整幅画面中裁剪出的{prompt_focus}区域。\n"
+                "【观察重点与隔离约束】：\n"
+                "1. 纯粹聚焦该局部切片本身：描述切片内清晰可见的微观美术特征（如眼睑弧度/睫毛/瞳孔反光高光、唇峰曲线/光泽、发丝分簇质感、面部微晕或饰品雕纹）。\n"
+                "2. 局部纯度隔离：严禁在描述中复述切片外部的无关大图背景（如远景大楼、天空、天体等）。\n"
+                "3. 篇幅约束：输出 1-2 句符合二次元美术术语的紧凑生动描述（40-70字）。\n\n"
+                "直接返回合法的 JSON 对象，仅包含两个键：\n"
+                "- \"detailed_caption\": 1-2 句高纯度局部特征描写。\n"
                 "- \"short_caption\": 4-8 个字的精炼中文短语。"
             )
         else:
@@ -381,19 +407,22 @@ def describe_yolo_detections(
 
             context_header = ""
             if global_context:
-                context_header = f"[Global Illustration Context]:\n{global_context.strip()}\n\n"
+                context_header = f"[Global Context Reference]:\n{global_context.strip()}\n\n"
 
             system_msg = (
                 "You are an expert anime character and visual art analyzer. "
-                "When given a cropped image patch, describe the specific visual feature in concise, precise detail. "
+                "Analyze cropped image patches focusing purely on the local visual features with strict isolation. "
                 "Output JSON only."
             )
             user_msg = (
-                f"{context_header}[Local Feature Inspection Task]:\n"
-                f"Focus on the {prompt_focus} shown in this cropped image patch.\n"
-                "Taking into account the overall character styling and lighting from the full illustration, describe its detailed visual appearance (color, shape, styling, texture, highlights, expression or decorations).\n"
+                f"{context_header}[Local Feature Inspection Task (Feature Isolation)]:\n"
+                f"Focus strictly on the {prompt_focus} shown in this cropped image patch.\n"
+                "Rules:\n"
+                "1. Describe solely the features visible within this crop (shape, color gradients, specular highlights, textures, styling).\n"
+                "2. Do not mention or repeat background or elements outside this crop.\n"
+                "3. Keep description to 1-2 concise, vivid sentences (30-60 words).\n\n"
                 "Return a valid JSON object with exactly two keys:\n"
-                "- \"detailed_caption\": 1-2 detailed sentences describing the visual features.\n"
+                "- \"detailed_caption\": 1-2 detailed sentences describing only this feature.\n"
                 "- \"short_caption\": A concise phrase (3-8 words) summarizing the appearance."
             )
 

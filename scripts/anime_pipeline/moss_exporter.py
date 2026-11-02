@@ -14,6 +14,12 @@ import sys
 from pathlib import Path
 
 
+try:
+    from .vlm_descriptor import clean_vlm_text
+except ImportError:
+    from vlm_descriptor import clean_vlm_text
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -181,7 +187,7 @@ def _clean_caption_text(desc_item: dict | str, cls_fallback: str = "item", langu
 
     # If already a high-quality VLM description
     if isinstance(desc_item, dict) and desc_item.get("type") == "vlm_yolo_desc":
-        clean = raw.strip()
+        clean = clean_vlm_text(raw)
         if len(clean) > 5 and not clean.startswith("Character"):
             return clean
 
@@ -346,10 +352,11 @@ def graph_to_moss_draft(
         # Prefer VLM detailed or short description
         for d in descs:
             if isinstance(d, dict) and d.get("type") == "vlm_yolo_desc":
-                caption_text = d.get("text", "")
+                caption_text = clean_vlm_text(d.get("text", ""))
                 break
         if not caption_text and descs:
             caption_text = _clean_caption_text(descs[0], cls_fallback=vid, language=language)
+        caption_text = clean_vlm_text(caption_text)
         if not caption_text:
             if language == "zh":
                 caption_text = f"二次元动漫【{vid.replace('_', ' ')}】表现。"
