@@ -234,6 +234,272 @@ def run_cl_tagger(
     return results
 
 
+class UltralyticsEnsemble:
+    """Ensemble runner for Ultralytics YOLO models (detect & segment) in models/ultralytics.
+
+    Automatically discovers and runs all available models in the folder (e.g. eyes, mouth,
+    breasts, jewelry, accessories) to provide high-precision anime spatial priors.
+    """
+
+    def __init__(
+        self,
+        model_dir: Path | str | None = None,
+        model_names: list[str] | None = None,
+        device: str = "auto",
+        conf: float = 0.20,
+        imgsz: int = 1280,
+    ) -> None:
+        try:
+            from ultralytics import YOLO
+        except ImportError:
+            print("[Warning] ultralytics is not installed. Skipping YOLO spatial priors.", file=sys.stderr)
+            self.models = {}
+            return
+
+        import torch
+
+        if model_dir is None:
+            model_dir = WORKSPACE_ROOT / "models" / "ultralytics"
+        self.model_dir = Path(model_dir)
+
+        if device == "auto":
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+
+        self.conf = conf
+        self.imgsz = imgsz
+        self.models: dict[str, YOLO] = {}
+
+        if not self.model_dir.exists():
+            return
+
+        all_pts = sorted(list(self.model_dir.glob("*.pt")) + list(self.model_dir.glob("*.onnx")))
+        selected_pts: list[Path] = []
+        if model_names:
+            names_set = {n.lower() for n in model_names}
+            for pt in all_pts:
+                if pt.name.lower() in names_set or pt.stem.lower() in names_set:
+                    selected_pts.append(pt)
+        else:
+            # Default: use all models found in the directory
+            selected_pts = all_pts
+
+        for pt in selected_pts:
+            try:
+                m = YOLO(str(pt))
+                self.models[pt.name] = m
+            except Exception as e:
+                print(f"[Warning] Failed to load YOLO model {pt.name}: {e}", file=sys.stderr)
+
+        if self.models:
+            print(f"[*] Loaded {len(self.models)} Ultralytics YOLO model(s) from {self.model_dir}:")
+            for name, m in self.models.items():
+                classes = list(m.names.values())
+                cls_prev = ", ".join(classes[:4]) + ("..." if len(classes) > 4 else "")
+                print(f"    • {name} [{m.task}]: {cls_prev}")
+
+    @property
+    def is_available(self) -> bool:
+        return len(self.models) > 0
+
+    def detect(self, img_path: Path) -> list[dict]:
+        from PIL import Image
+
+        if not self.models:
+            return []
+
+        try:
+            with Image.open(img_path) as im:
+                w, h = im.size
+        except Exception as e:
+            print(f"[Warning] Failed to open image for YOLO: {img_path} ({e})", file=sys.stderr)
+            return []
+
+        results = []
+        for model_name, model in self.models.items():
+            try:
+                out = model(str(img_path), imgsz=self.imgsz, conf=self.conf, device=self.device, verbose=False)[0]
+                for b in out.boxes:
+                    cls_id = int(b.cls[0])
+                    cls_name = model.names.get(cls_id, str(cls_id))
+                    conf = float(b.conf[0])
+                    x1, y1, x2, y2 = b.xyxy[0].tolist()
+                    results.append({
+                        "class": cls_name,
+                        "conf": round(conf, 4),
+                        "model": model_name,
+                        "bbox": {
+                            "left": round(max(0.0, x1 / w), 4),
+                            "top": round(max(0.0, y1 / h), 4),
+                            "right": round(min(1.0, x2 / w), 4),
+                            "bottom": round(min(1.0, y2 / h), 4),
+                            "confidence": round(conf, 4),
+                        },
+                    })
+            except Exception as e:
+                print(f"[Warning] Model {model_name} failed on {img_path.name}: {e}", file=sys.stderr)
+
+        return self._nms_dedup(results)
+
+    @staticmethod
+    def _nms_dedup(detections: list[dict], iou_thresh: float = 0.6) -> list[dict]:
+        if len(detections) <= 1:
+            return detections
+        dets = sorted(detections, key=lambda d: -d["conf"])
+        keep = []
+        for d in dets:
+            overlap = False
+            b1 = d["bbox"]
+            for k in keep:
+                if k["class"] == d["class"]:
+                    b2 = k["bbox"]
+                    ix1 = max(b1["left"], b2["left"])
+                    iy1 = max(b1["top"], b2["top"])
+                    ix2 = min(b1["right"], b2["right"])
+                    iy2 = min(b1["bottom"], b2["bottom"])
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter = (ix2 - ix1) * (iy2 - iy1)
+                        area1 = (b1["right"] - b1["left"]) * (b1["bottom"] - b1["top"])
+                        area2 = (b2["right"] - b2["left"]) * (b2["bottom"] - b2["top"])
+                        union = area1 + area2 - inter
+                        if union > 0 and (inter / union) > iou_thresh:
+                            overlap = True
+                            break
+            if not overlap:
+                keep.append(d)
+        return keep
+
+
+def merge_yolo_to_graph(graph_data: dict, yolo_detections: list[dict]) -> dict:
+    """Merge YOLO spatial prior detections into scene graph vertices and edges."""
+    if not yolo_detections:
+        return graph_data
+
+    vertices = graph_data.setdefault("vertices", [])
+    edges = graph_data.setdefault("edges", [])
+
+    # Find character or girl/person vertex to act as parent
+    parent_vid = None
+    for v in vertices:
+        v_label = v.get("label")
+        vid = v.get("vertex_id", "")
+        if v_label == "entity" and any(k in vid.lower() for k in ["girl", "boy", "character", "person", "woman", "man"]):
+            parent_vid = vid
+            break
+    if not parent_vid and vertices:
+        parent_vid = vertices[0].get("vertex_id", "")
+
+    existing_vids = {v.get("vertex_id") for v in vertices}
+    class_counts: dict[str, int] = {}
+
+    for det in yolo_detections:
+        cls_name = det["class"]
+        idx = class_counts.get(cls_name, 0)
+        class_counts[cls_name] = idx + 1
+
+        clean_cls = re.sub(r"[^\w\-]", "_", cls_name)
+        if parent_vid and parent_vid != clean_cls:
+            vid = f"{parent_vid}_{clean_cls}_{idx}"
+        else:
+            vid = f"{clean_cls}_{idx}"
+
+        while vid in existing_vids:
+            idx += 1
+            vid = f"{clean_cls}_{idx}"
+        existing_vids.add(vid)
+
+        new_v = {
+            "vertex_id": vid,
+            "label": "entity",
+            "bbox": det["bbox"],
+            "descs": [
+                {
+                    "text": f"Character {cls_name} detected via {det['model']} (confidence: {det['conf']:.2f}).",
+                    "type": "yolo_prior",
+                }
+            ],
+        }
+        vertices.append(new_v)
+
+        if parent_vid:
+            edges.append({
+                "source": parent_vid,
+                "target": vid,
+                "relation": "part of",
+            })
+
+    return graph_data
+
+
+def build_fast_yolo_graph(img_path: Path, tag_item: dict, yolo_dets: list[dict]) -> dict:
+    """Build a lightweight scene graph from CLTagger tags and YOLO detections without running VLM/GBC."""
+    tags_info = tag_item.get("tags", {})
+    char_dict = tags_info.get("character", {})
+    copy_dict = tags_info.get("copyright", {})
+    gen_dict = tags_info.get("general", {})
+
+    sorted_chars = [t for t, _ in sorted(char_dict.items(), key=lambda kv: -kv[1])]
+    sorted_copys = [t for t, _ in sorted(copy_dict.items(), key=lambda kv: -kv[1])]
+    sorted_gens = [t for t, _ in sorted(gen_dict.items(), key=lambda kv: -kv[1])][:15]
+
+    char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "Anime character"
+    copy_str = f" from {', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}" if sorted_copys else ""
+    top_tags_str = ", ".join(t.replace("_", " ") for t in sorted_gens)
+
+    detail_cap = f"{char_str}{copy_str}. Visual features: {top_tags_str}."
+    short_cap = char_str
+
+    root_vertex = {
+        "vertex_id": "",
+        "label": "image",
+        "bbox": {"left": 0.0, "top": 0.0, "right": 1.0, "bottom": 1.0, "confidence": None},
+        "descs": [{"text": detail_cap}],
+    }
+
+    graph = {
+        "img_path": str(img_path),
+        "detail_caption": detail_cap,
+        "short_caption": short_cap,
+        "vertices": [root_vertex],
+        "edges": [],
+    }
+
+    char_vid = "character"
+    if sorted_chars:
+        clean_char = re.sub(r"[^\w\-]", "_", sorted_chars[0].split("(")[0].strip())[:25]
+        char_vid = clean_char
+    elif "1girl" in sorted_gens:
+        char_vid = "girl"
+    elif "1boy" in sorted_gens:
+        char_vid = "boy"
+
+    if yolo_dets:
+        xs = [d["bbox"]["left"] for d in yolo_dets] + [d["bbox"]["right"] for d in yolo_dets]
+        ys = [d["bbox"]["top"] for d in yolo_dets] + [d["bbox"]["bottom"] for d in yolo_dets]
+        pad = 0.05
+        char_bbox = {
+            "left": round(max(0.0, min(xs) - pad), 4),
+            "top": round(max(0.0, min(ys) - pad), 4),
+            "right": round(min(1.0, max(xs) + pad), 4),
+            "bottom": round(min(1.0, max(ys) + pad), 4),
+            "confidence": 0.90,
+        }
+    else:
+        char_bbox = {"left": 0.1, "top": 0.05, "right": 0.9, "bottom": 0.95, "confidence": 0.85}
+
+    graph["vertices"].append({
+        "vertex_id": char_vid,
+        "label": "entity",
+        "bbox": char_bbox,
+        "descs": [{"text": f"Character {char_str}{copy_str}."}],
+    })
+    graph["edges"].append({"source": "", "target": char_vid, "relation": "contains"})
+
+    merge_yolo_to_graph(graph, yolo_dets)
+    return graph
+
+
 def run_gbc(
     input_file: Path,
     output_file: Path,
@@ -346,7 +612,7 @@ def print_summary(graphs_file: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CLTagger + KohakuGBC Automated Pipeline")
+    parser = argparse.ArgumentParser(description="CLTagger + Ultralytics YOLO + KohakuGBC Automated Pipeline")
     parser.add_argument("images", nargs="+", help="Image file path(s) or directory containing images")
     parser.add_argument("--config", default="configs/machine/llama_test.py", help="Base machine config (default: configs/machine/llama_test.py)")
     parser.add_argument("--cltagger-dir", default=None, help="Directory containing CLTagger model.onnx and model_vocabulary.json")
@@ -354,7 +620,13 @@ def main() -> None:
     parser.add_argument("--name", default=None, help="Optional custom name prefix for auto-created run directory")
     parser.add_argument("--threshold-general", type=float, default=0.35, help="Confidence threshold for general tags")
     parser.add_argument("--threshold-character", type=float, default=0.40, help="Confidence threshold for character tags")
-    parser.add_argument("--no-gbc", action="store_true", help="Only run CLTagger and generate input.jsonl without running gbc")
+    parser.add_argument("--no-gbc", action="store_true", help="Only run CLTagger and YOLO priors without running gbc")
+    parser.add_argument("--yolo-dir", default=None, help="Directory containing Ultralytics YOLO models (default: models/ultralytics)")
+    parser.add_argument("--yolo-models", nargs="*", default=None, help="Specific YOLO model names to use (default: use all models in yolo-dir)")
+    parser.add_argument("--no-yolo", action="store_true", help="Disable Ultralytics YOLO spatial priors")
+    parser.add_argument("--yolo-conf", type=float, default=0.20, help="Confidence threshold for YOLO detections (default: 0.20)")
+    parser.add_argument("--yolo-imgsz", type=int, default=1280, help="Inference resolution for YOLO models (default: 1280)")
+    parser.add_argument("--yolo-device", default="auto", help="Device for YOLO models: 'auto', 'cuda:0', or 'cpu' (default: auto)")
     args = parser.parse_args()
 
     # Collect images
@@ -380,6 +652,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     input_file = output_dir / "input.jsonl"
     graphs_file = output_dir / "graphs.jsonl"
+    yolo_file = output_dir / "yolo_priors.json"
     base_config = (WORKSPACE_ROOT / args.config).resolve()
 
     # Update runs/latest symlink for convenience
@@ -391,7 +664,7 @@ def main() -> None:
     except Exception:
         pass
 
-    # Stage 1: Standalone CLTagger
+    # Stage 1a: Standalone CLTagger
     tag_results = run_cl_tagger(
         images,
         threshold_general=args.threshold_general,
@@ -399,13 +672,69 @@ def main() -> None:
         model_dir=args.cltagger_dir,
     )
 
+    # Stage 1b: Ultralytics YOLO Spatial Priors
+    yolo_results_by_img: dict[str, list[dict]] = {}
+    if not args.no_yolo:
+        yolo_ensemble = UltralyticsEnsemble(
+            model_dir=args.yolo_dir,
+            model_names=args.yolo_models,
+            device=args.yolo_device,
+            conf=args.yolo_conf,
+            imgsz=args.yolo_imgsz,
+        )
+        if yolo_ensemble.is_available:
+            print(f"\n[*] Running Ultralytics YOLO ensemble on {len(images)} image(s)...")
+            for img_p in images:
+                dets = yolo_ensemble.detect(img_p)
+                yolo_results_by_img[str(img_p)] = dets
+                det_summary = ", ".join(f"{d['class']} ({d['conf']:.2f})" for d in dets[:6])
+                print(f"[YOLO] Image: {img_p.name} -> {len(dets)} parts detected: {det_summary or 'None'}")
+            yolo_file.write_text(json.dumps(yolo_results_by_img, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"[+] Saved YOLO spatial priors to: {yolo_file}")
+
+    # Inject spatial priors into tag_results
+    for item in tag_results:
+        img_key = item.get("image", "")
+        item["spatial_priors"] = yolo_results_by_img.get(img_key, [])
+
     with open(input_file, "w", encoding="utf-8") as f:
         for item in tag_results:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
-    print(f"\n[+] Saved preliminary tags to: {input_file}")
+    print(f"\n[+] Saved preliminary tags & priors to: {input_file}")
 
     if args.no_gbc:
-        print("[*] --no-gbc specified. Exiting after preliminary tagging.")
+        print("\n[*] --no-gbc specified. Generating fast scene graph from priors...")
+        fast_graphs = []
+        for item in tag_results:
+            img_p = Path(item["image"])
+            fast_g = build_fast_yolo_graph(img_p, item, item.get("spatial_priors", []))
+            fast_graphs.append(fast_g)
+
+        with open(graphs_file, "w", encoding="utf-8") as f:
+            for g in fast_graphs:
+                f.write(json.dumps(g, ensure_ascii=False) + "\n")
+
+        print_summary(graphs_file)
+        print(f"[+] Output directory: {output_dir}")
+        print(f"[+] Fast Graphs:      {graphs_file}")
+        print(f"[+] Latest symlink:   {latest_symlink / 'graphs.jsonl'}")
+
+        # Auto-generate interactive HTML viewer
+        try:
+            from visualize_graph import generate_html, load_image_base64
+            with open(graphs_file, "r", encoding="utf-8") as f:
+                first_data = json.loads(f.readline().strip())
+            img_b64, orig_w, orig_h = load_image_base64(first_data.get("img_path", ""))
+            html_code = generate_html(first_data, img_b64, orig_w, orig_h)
+            viewer_path = output_dir / "viewer.html"
+            viewer_path.write_text(html_code, encoding="utf-8")
+            latest_html = latest_symlink / "viewer.html"
+            if latest_html.parent.exists() and viewer_path != latest_html:
+                latest_html.write_text(html_code, encoding="utf-8")
+            print(f"[+] Visualizer HTML:  {viewer_path}")
+            print(f"[+] Latest HTML:      {latest_html}")
+        except Exception as e:
+            print(f"[Warning] Failed to generate viewer.html: {e}", file=sys.stderr)
         return
 
     # Stage 2: KohakuGBC
@@ -415,6 +744,21 @@ def main() -> None:
         base_config=base_config,
         report_dir=output_dir / "report",
     )
+
+    # Post-process: merge YOLO detections into KohakuGBC graphs
+    if yolo_results_by_img:
+        merged_lines = []
+        with open(graphs_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                g_data = json.loads(line)
+                img_key = g_data.get("img_path", "")
+                y_dets = yolo_results_by_img.get(img_key, [])
+                merged_g = merge_yolo_to_graph(g_data, y_dets)
+                merged_lines.append(json.dumps(merged_g, ensure_ascii=False) + "\n")
+        with open(graphs_file, "w", encoding="utf-8") as f:
+            f.writelines(merged_lines)
 
     # Stage 3: Summary
     print_summary(graphs_file)

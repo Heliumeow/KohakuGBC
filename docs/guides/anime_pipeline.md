@@ -1,37 +1,41 @@
 # Anime Tagging Pipeline & Interactive Visualizer
 
 This guide covers the two-stage anime image annotation pipeline in KohakuGBC, integrating
-**CLTagger** (Anime ONNX classifier) as a visual prior with **KohakuGBC** (VLM + OWLv2/SAM 3 scene
-graph generation) and the interactive HTML visualizer.
+**CLTagger** (Anime ONNX classifier) and **Ultralytics YOLO Ensemble** (anime face/eye/body/accessory spatial priors) with **KohakuGBC** (VLM + OWLv2/SAM 3 scene graph generation) and the interactive HTML visualizer.
 
 ---
 
 ## 1. Overview & Architecture
 
-Standard Vision-Language Models (VLMs) often struggle with fine-grained anime franchise lore,
-frequently hallucinating character identities or mistaking lore-specific accessories (e.g. Arknights
-infection monitors or headgear) for generic objects like headphones.
+Standard Vision-Language Models (VLMs) and generic open-vocabulary detectors often struggle with fine-grained anime franchise lore and stylized features (such as anime eyes, facial details, or specific accessories), frequently missing localized features or hallucinating identities.
 
 To resolve this, KohakuGBC provides an automated two-stage pipeline:
 
 ```
 [ Input Image ]
        │
-       ▼
-[ Stage 1: CLTagger (ONNX) ] ──▶ Character, Copyright & Visual Tags with Confidences
-       │
-       ▼
-[ Stage 2: KohakuGBC (VLM + Detector) ]
-       │  • VLM receives visual tags as reference hints
-       │  • Detail caption identifies specific character & franchise lore
-       │  • Elements list retains standard COCO nouns for open-vocabulary detectors
-       ▼
-[ Output: Scene Graph (graphs.jsonl) ]
-       │
-       ▼
-[ Stage 3: Interactive Visualizer (viewer.html) ]
-       • SVG BBox overlays with color-coded categories
-       • Hover/Click tooltips with localized descriptions
+       ├─────────────────────────────────────────┐
+       ▼                                         ▼
+[ Stage 1a: CLTagger (ONNX) ]         [ Stage 1b: Ultralytics YOLO Ensemble ]
+  • Character, Copyright & Tags         • High-precision spatial anchor boxes
+  • Confidence score ranking            • Eyes, mouth, breasts, jewelry, etc.
+       │                                         │
+       └────────────────────┬────────────────────┘
+                            │
+                            ▼
+           [ Stage 2: KohakuGBC (VLM + Detector) ]
+              • VLM receives visual tags as reference hints
+              • Detail caption identifies specific character & franchise lore
+              • Elements list retains standard COCO nouns for open detectors
+              • Merges high-precision YOLO spatial priors into the graph
+                            │
+                            ▼
+              [ Output: Scene Graph (graphs.jsonl) ]
+                            │
+                            ▼
+              [ Stage 3: Interactive Visualizer (viewer.html) ]
+              • SVG BBox overlays with color-coded categories
+              • Hover/Click tooltips with localized descriptions
 ```
 
 ---
@@ -40,7 +44,7 @@ To resolve this, KohakuGBC provides an automated two-stage pipeline:
 
 ### 2.1 Prerequisites & Dependencies
 
-In addition to standard KohakuGBC dependencies (`torch` extra for detectors and embedders), the anime pipeline requires `onnxruntime` (or `onnxruntime-gpu`) and optional `huggingface_hub` for automatic tagger weights resolution:
+In addition to standard KohakuGBC dependencies (`torch` extra for detectors and embedders), the anime pipeline requires `onnxruntime`, `ultralytics`, and optional `huggingface_hub`:
 
 ```bash
 # Install with anime extra dependencies
@@ -52,17 +56,26 @@ pip install -e ".[anime,torch]"
 Run the complete pipeline on a single image (supports Windows paths `C:\...` or Linux paths `/mnt/c/...`):
 
 ```bash
-# Single image run
+# Single image run (CLTagger + YOLO priors + KohakuGBC + viewer.html)
 .venv/bin/python scripts/cl_gbc_pipeline.py "C:\Users\YourUsername\Pictures\your_image.png"
 
 # Batch run on an entire folder
 .venv/bin/python scripts/cl_gbc_pipeline.py "/mnt/c/Users/YourUsername/Pictures"
 
-# Preliminary tagging only (generates input.jsonl without launching VLM/detector)
+# Ultra-fast prior tagging & bbox detection only (<1s, generates viewer.html without VLM/GBC)
 .venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --no-gbc
 ```
 
-### 2.3 Output Structure
+### 2.3 Ultralytics YOLO Spatial Priors (`models/ultralytics/`)
+
+Place any specialized YOLO models (e.g. `Eyes.pt`, `adetailer2dMouth_v10.pt`, `breasts_seg.pt`, `jewelryDetector_v021.pt`) into `models/ultralytics/`.
+
+- **Default behavior**: The pipeline automatically discovers and runs **all** `.pt` and `.onnx` models in `models/ultralytics/` on every image.
+- **Custom selection**: Pass `--yolo-models model1.pt model2.pt` to activate only specific models.
+- **Disable YOLO**: Pass `--no-yolo` to skip YOLO spatial priors.
+- **Tuning knobs**: Adjust confidence with `--yolo-conf 0.20` and resolution with `--yolo-imgsz 1280`.
+
+### 2.4 Output Structure
 
 Each run automatically creates a dedicated, isolated directory under `runs/`:
 - **Single image:** `runs/<image_name>_<YYYYMMDD_HHMMSS>/`
@@ -77,7 +90,7 @@ Inside the run directory:
 > [!TIP]
 > A symlink `runs/latest` is automatically created and updated on every run. You can always inspect the newest result at `runs/latest/graphs.jsonl` or `runs/latest/viewer.html`.
 
-### 2.4 CLTagger Model Resolution
+### 2.5 CLTagger Model Resolution
 
 `scripts/cl_gbc_pipeline.py` includes a standalone ONNX inference implementation (requiring only `onnxruntime`, `numpy`, and `Pillow`, with zero external project dependencies).
 

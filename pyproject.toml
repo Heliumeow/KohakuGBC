@@ -64,6 +64,7 @@ parquet = ["pyarrow>=15"]
 anime = [
     "onnxruntime>=1.18",
     "huggingface_hub>=0.20",
+    "ultralytics>=8.0",
 ]
 dev = [
     "pytest>=8",
