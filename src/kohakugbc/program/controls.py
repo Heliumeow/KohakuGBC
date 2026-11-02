@@ -22,6 +22,13 @@ DEFAULTS = {
     "max_features_per_entity": 4,
     "max_instances_per_text": 6,
     "max_depth": 3,
+    # Detection selection, the PoC's (tuned for OWLv2, whose near-duplicate boxes need a tight
+    # NMS): kept above box_score, NMS at nms_iou (nms_iou_single for a single object), a box
+    # containing another dropped
+    "box_score": 0.1,
+    "nms_iou": 0.2,
+    "nms_iou_single": 0.05,
+    "drop_containers": True,
     # Regions per VLM request; leaves captioned by the parent's reply
     "entity_batch": 1,
     "leaf_caption": "query",
@@ -36,6 +43,16 @@ DEFAULTS = {
     # Seeded roots: tags at least this confident name elements; tags in the element prompt
     "tag_threshold": 0.35,
     "tag_hint": False,
+    # Tags on the finished graph (kohakugbc.nodes.tags): where, from which set, and a region's
+    # threshold as a multiple of the tag's category threshold, how far (logits) below the best
+    # region a region still holds the tag; tag_placement "top": the image and the vertices whose
+    # only parent is the image, nothing moved; tag_regions: crops tagged alone or pooled boxes
+    "tagging": "none",
+    "tag_source": "tagger",
+    "tag_placement": "top",
+    "tag_regions": "crop",
+    "tag_region_scale": 1.0,
+    "tag_region_margin": 1.0,
 }
 
 CHOICES = {
@@ -44,6 +61,10 @@ CHOICES = {
     "leaf_caption": ("query", "parent"),
     "relational": ("both", "relation", "composition", "none"),
     "relate": ("end", "every_round"),
+    "tagging": ("none", "image", "regions"),
+    "tag_source": ("tagger", "given", "both"),
+    "tag_placement": ("top", "place"),
+    "tag_regions": ("crop", "pool"),
 }
 
 

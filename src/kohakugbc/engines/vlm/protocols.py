@@ -15,7 +15,8 @@ and how Qwen3.5's thinking is turned off; the flavour picks:
 The template switch is ``chat_template_kwargs: {"enable_thinking": false}``.
 
 ``anthropic``: the Messages API (``/messages``); no schema field: the prompt asks for JSON and
-the reply parsers read the first JSON object.
+the reply parsers read the first JSON object. ``grammar=False`` leaves the schema out under any
+protocol.
 
 Every request carries ``X-GBC-Request``, the SHA-256 of its key, so a server (the replay
 server, a cache, a log) can tell which question it is.
@@ -23,6 +24,7 @@ server, a cache, a log) can tell which question it is.
 
 import base64
 import hashlib
+import json
 
 from kohakugbc.nodes.specs import chat as specs
 
@@ -42,7 +44,12 @@ def _b64(picture: dict) -> str:
 # ---- OpenAI-compatible ---------------------------------------------------------------------------
 
 
-def openai_body(request: dict, model: str, flavour: str, sampling: dict) -> dict:
+def openai_body(
+    request: dict, model: str, flavour: str, sampling: dict, grammar: bool = True, kohaku=False
+) -> dict:
+    """``grammar``: the request's JSON schema goes to the server (False: the prompt alone asks
+    for the JSON); ``kohaku`` (``vllm`` flavour): it goes as ``vllm_xargs`` to KohakuvLLM's
+    grammar logits processor instead of vLLM's structured outputs."""
     content = []
     for label, picture in request["images"]:
         if label is not None:
@@ -62,11 +69,15 @@ def openai_body(request: dict, model: str, flavour: str, sampling: dict) -> dict
         "max_tokens": request["max_tokens"],
         **sampling,
     }
-    schema = specs.schema(request["schema"]) if request["schema"] else None
+    schema = specs.schema(request["schema"]) if request["schema"] and grammar else None
     format_ = {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}}
+    if kohaku and flavour != "vllm":
+        raise ValueError(f"KohakuvLLM's grammar needs the vllm flavour, not {flavour!r}")
     match flavour:
         case "vllm":
-            if schema is not None:
+            if schema is not None and kohaku:
+                body["vllm_xargs"] = {"kohaku_json_schema": json.dumps(schema)}
+            elif schema is not None:
                 body["structured_outputs"] = {"json": schema}
             body["chat_template_kwargs"] = {"enable_thinking": False}
         case "sglang":
@@ -102,7 +113,11 @@ def openai_reply(data: dict) -> str:
 # ---- Anthropic Messages ------------------------------------------------------------------------
 
 
-def anthropic_body(request: dict, model: str, flavour: str, sampling: dict) -> dict:
+def anthropic_body(
+    request: dict, model: str, flavour: str, sampling: dict, grammar: bool = True, kohaku=False
+) -> dict:
+    if kohaku:
+        raise ValueError("KohakuvLLM's grammar needs the openai protocol, vllm flavour")
     content = []
     for label, picture in request["images"]:
         if label is not None:

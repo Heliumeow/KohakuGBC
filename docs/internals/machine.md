@@ -12,7 +12,7 @@ Layers are dicts or Python files whose lower-case module-level names form one
 | Name | Holds |
 |---|---|
 | `engines` | per slot (`vlm`, `detect`, `embed`, `cpu`): `entry` and the entry's settings |
-| `machine` | `vlm_waiting`, `max_jobs` (admission), `window`, `start_timeout_s` (a unit's start, 600), `record`, `store` (`"memory"`), `report` (a RunReport folder), `knobs` (other Togeari knobs) |
+| `machine` | `vlm_waiting`, `waiting`, `max_jobs` (admission), `window`, `start_timeout_s` (a unit's start, 600), `record`, `store` (`"memory"`), `report` (a RunReport folder), `waits` (`{"every_s", "limit"}`: why jobs wait, sampled into the report's `waits.jsonl`, `kohakugbc.machine.waits`; about 180 ms of dispatcher time per sample on the RTX 5090 machine), `knobs` (other Togeari knobs) |
 | `source` | `{"kind": "folder" \| "jsonl" \| "trace", "path": ...}` |
 | `sink` | `{"kind": "memory"}` or `{"kind": "graphs", "path": ...}` |
 | `controls` | defaults under every job's own controls |
@@ -61,18 +61,17 @@ on pseudo engines ([performance](../performance/pseudo-engines.md)).
 | `open_image`, `crop`, `crop_many`, `image_root`, `seeded_root`, `detected`, `entity_record`, `batch_replies`, `coverage_root`, `relational_queries`, `relational_request`, `relational_record`, `to_gbc` | the CPU lane |
 | every other node, `kir.std` | inline |
 
-Admission is `TargetLoad` on the VLM lane (`vlm_waiting`, `max_jobs`): images are admitted while
-the lane's queue and its units' waiting counts are below the target. Issue is
-`OldestJobFirst`.
+Admission is `TargetLoad` on the VLM lane (`vlm_waiting`) and on every lane of `waiting`
+(`{lane: items}`), all under `max_jobs` (`admission_of`): an image is admitted while each lane's
+queue and its units' waiting counts are below its limit and fewer than `max_jobs` images are
+resident. The limits gate new images only; resident images still send their later requests, so
+`max_jobs` is what bounds an image's time in the machine (about `max_jobs` / throughput). Issue
+is `OldestJobFirst`.
 
 ## Checks
 
-`tests/machine` runs the recorded PoC jobs of every fixture arm on replay engines: each graph
-equals the PoC's by digest and each recorded job conforms to KIR's reference interpreter; a job
-whose requests take 50 ms each finishes in under half its requests' sum (a wave's regions run
-side by side); 30 jobs keep a VLM lane of 8 within 1.4x of its floor. `tests/machine/
-test_configurations.py` runs the jobs with three VLM units, with units behind an engine host in
-the same process and in another, with a unit down mid-run, with failing VLM requests and
-detector calls, with a slow unit beside a fast one, with a unit joining and one leaving mid-run,
-and stopped mid-run then resumed from snapshots: every job that ends ok gives the PoC's graph. `scripts/bench/pseudo_machine.py`
-measures the configurations of [performance](../performance/pseudo-engines.md).
+`tests/program` replays the recorded PoC jobs of every fixture arm through KIR's reference
+interpreter: each graph equals the PoC's by digest. The machine itself is measured by runs:
+`scripts/bench/pseudo_machine.py` on pseudo engines ([performance](../performance/pseudo-engines.md)),
+`scripts/bench/real_machine.py` and `scripts/bench/machine/card.sh` on real ones, comparing every
+graph with the PoC's.

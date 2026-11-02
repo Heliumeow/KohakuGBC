@@ -1,22 +1,22 @@
 [build-system]
-requires = ["maturin>=1.9,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
 
 [project]
 name = "kohakugbc"
-# maturin reads the version from Cargo.toml.
-dynamic = ["version"]
+version = "0.1.0"
 description = "KohakuGBC: Graph-Based Captioning as a KIR program on the Togeari dataflow machine, with its engines"
 authors = [
     { name = "Shih-Ying Yeh(KohakuBlueLeaf)", email = "apolloyeh0123@gmail.com" },
 ]
 license = { text = "Apache-2.0" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "togeari[web]>=0.2.0",
+    "kohakugbc-data>=0.1.0",
+    "togeari[web]>=0.3.0",
     "httpx>=0.27",
-    "kohakunode>=0.2.2",
+    "kohakunode>=0.3.0",
     "pillow>=10",
     "numpy>=2",
     "scipy>=1.11",
@@ -26,7 +26,6 @@ dependencies = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -43,14 +42,23 @@ Repository = "https://github.com/KohakuBlueleaf/KohakuGBC"
 [project.optional-dependencies]
 # The vision models (detector, embedder) on Togeari's torch engine
 torch = [
-    "togeari[torch]>=0.2.0",
+    "togeari[torch]>=0.3.0",
     "torch>=2.4",
     "torchvision>=0.19",
     "transformers>=5.20",
     "sentence-transformers>=6.1",
+    "inflect>=7",
 ]
 # The in-process VLM (Linux)
 vllm = ["vllm>=0.11"]
+# The qwen35 VLM engine (Windows and Linux)
+qwen35 = [
+    "kohakugbc[torch]",
+    "flash-linear-attention>=0.5",
+    "triton>=3.3; sys_platform != 'win32'",
+    "triton-windows>=3.3; sys_platform == 'win32'",
+    "xgrammar>=0.2",
+]
 parquet = ["pyarrow>=15"]
 # Anime prior tagger pipeline
 anime = [
@@ -58,44 +66,48 @@ anime = [
     "huggingface_hub>=0.20",
 ]
 dev = [
-    "maturin>=1.9,<2.0",
     "pytest>=8",
     "pytest-xdist>=3.6",
     "ruff",
     "black",
     "httpx>=0.27",
-    "togeari[web]>=0.2.0",
+    "togeari[web]>=0.3.0",
 ]
 
 [project.scripts]
 gbc = "kohakugbc.cli.main:main"
 
-[tool.maturin]
-# Python source is in src/kohakugbc; the crate is src/kohakugbc-rust (Cargo.toml)
-python-source = "src"
-module-name = "kohakugbc._rs"
-include = ["src/kohakugbc/**/*.kir", "src/kohakugbc/**/*.json", "src/kohakugbc/**/*.txt"]
+[tool.hatch.build.targets.wheel]
+# The GBC machine and engines, and the models GBC runs itself (their kernels and numerics) as
+# a standalone package beside it; the native part is in kohakugbc-data (packages/)
+packages = ["src/kohakugbc", "src/kohakugbc_models"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/LICENSE", "/pyproject.toml"]
+
+# A checkout develops both packages together: `uv pip install -e packages/kohakugbc-data -e .`
+[tool.uv.sources]
+kohakugbc-data = { path = "packages/kohakugbc-data", editable = true }
 
 [tool.black]
 line-length = 100
-target-version = ["py310"]
+target-version = ["py311"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "BLE", "UP", "SIM", "PERF", "RUF100", "PLC0415"]
 ignore = ["B905", "PERF203"]
 
+[tool.ruff.lint.per-file-ignores]
+# Triton kernels name their output pointer O
+"src/kohakugbc_models/vlm/qwen35/ops/backends/triton/*.py" = ["E741"]
+
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "gpu: needs a CUDA device; `-m \"not gpu\"` runs the CPU-only suite",
-    "serial: asserts a wall-clock bound or a scheduling outcome; runs in its own pass without pytest-xdist (`-m serial`)",
-    "weights: loads real model weights (downloads on first use)",
-]

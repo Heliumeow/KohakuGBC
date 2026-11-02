@@ -27,9 +27,21 @@ call the sequential run cannot tell apart, and turns their model calls into batc
 
 ## Highlights
 
+- **2.06 images/s on one RTX 5090, 8.17 on four.** Qwen3.5-4B, SAM 3 and EmbeddingGemma on each
+  card, about 15 vertices and 27 captions per graph; each image is 41 s in the machine at the
+  median, however long the source runs. Four cards give 3.96x one card
+  ([measured](#measured)).
+- **Engines in their own processes.** Every card's engines run in an engine host process; the
+  machine's process holds connectors and the dispatcher only, over shared memory. That is +9%
+  over the same engines in the machine's process, and the same connector reaches engines on
+  other nodes.
+- **vLLM 3.1x faster on this workload.** [KohakuvLLM](https://github.com/KohakuBlueleaf/KohakuvLLM)
+  (a drop-in vLLM plugin) takes `vllm serve` from 11.4 to 35.0 requests/s on one RTX 5090: FP8
+  GDN projections, a bf16 or INT8 GDN state, a Rust JSON grammar, and a phased scheduler. Every
+  reply is schema-valid.
 - **GBC at scale, with the models you choose.** Thousands to millions of images through a hosted
-  API, your own vLLM or SGLang servers, or everything in one process on your GPU; engines on
-  other nodes join the same lanes.
+  API, your own vLLM or SGLang servers, or engines on your GPUs; engines on other nodes join the
+  same lanes.
 - **Exactly the sequential procedure.** Every job can be recorded and replayed through KIR's
   reference interpreter. On recorded runs of GBC's proof of concept, every graph equals the
   PoC's to the digest.
@@ -41,20 +53,27 @@ call the sequential run cannot tell apart, and turns their model calls into batc
 ## Install
 
 ```
+pip install kohakugbc-data            # graphs and datasets only: no machine, no GPU stack
 pip install kohakugbc                 # program, machine, API and replay engines
 pip install "kohakugbc[torch]"        # detector (OWLv2, SAM 3) and embedder on torch
 pip install "kohakugbc[vllm]"         # the VLM in-process through vLLM (Linux)
-pip install -e examples/qwen35        # the qwen35 engine (Windows and Linux; from a clone)
+pip install "kohakuvllm @ git+https://github.com/KohakuBlueleaf/KohakuvLLM"   # our vLLM parts
+pip install "kohakugbc[qwen35]"       # the qwen35 VLM engine (Windows and Linux)
 ```
 
-Wheels carry the Rust extension `kohakugbc._rs` (graph resolution). From a clone, with a Rust
-toolchain:
+Two packages from this repo:
+
+- `kohakugbc-data` (`packages/kohakugbc-data`, on PyPI): the GBC graph (store, resolution,
+  prompt rendering) and the GBC dataset format, with its Rust extension; depends on numpy,
+  pillow, pyarrow and kohakuvault only. Training code and dataset tools use this alone.
+- `kohakugbc` (pure Python): the program, machine and engines, on top of `kohakugbc-data`.
+
+From a clone, with a Rust toolchain:
 
 ```
 git clone https://github.com/KohakuBlueleaf/KohakuGBC && cd KohakuGBC
 uv venv -p 3.13
-uv pip install -e ".[torch,dev]"      # add torch from the index matching your driver
-uv pip install -e examples/qwen35
+uv pip install -e packages/kohakugbc-data -e ".[torch,qwen35,dev]"   # torch: the index matching your driver
 gbc doctor
 ```
 
@@ -139,9 +158,9 @@ with machine:
 
 | Layer | Package | Holds |
 |---|---|---|
-| GBC program | `kohakugbc.program`, `kohakugbc.nodes`, `kohakugbc.graph` | `gbc.kir` (one image job), the node library `gbc`, controls, records and graph resolution (Python reference; Rust in `kohakugbc._rs`, equal by digest) |
+| GBC program | `kohakugbc.program`, `kohakugbc.nodes`, `kohakugbc.graph` | `gbc.kir` (one image job), the node library `gbc`, controls, records and graph resolution (Python reference; Rust in `kohakugbc-data`, equal by digest) |
 | GBC machine | `kohakugbc.machine`, `kohakugbc.io` | the program on Togeari: one lane per engine slot, bindings, admission, sources, sinks, configuration layers |
-| GBC engines | `kohakugbc.engines`, `examples/qwen35` | entries per slot, the placement plan, engines on other nodes, replay engines for runs without models |
+| GBC engines | `kohakugbc.engines`, `kohakugbc_models` | entries per slot, the placement plan, engines on other nodes, replay engines for runs without models |
 
 ### The GBC graph
 
@@ -206,6 +225,7 @@ are the defaults under each job's own.
 | `root` | `query` | `query` (the VLM describes the image), `text` / `image_text` (from existing captions), `tags` (from tags) |
 | `min_nodes`, `max_nodes`, `max_rounds` | 8, 20, 4 | node budget on image and entity vertices; rounds stop at the maximum, breadth rounds run below the minimum |
 | `max_top_level`, `max_features_per_entity`, `max_instances_per_text`, `max_depth` | 6, 4, 6, 3 | fan-out caps and depth |
+| `box_score`, `nms_iou`, `nms_iou_single`, `drop_containers` | 0.1, 0.2, 0.05, True | detection selection: score cut, NMS IoU (multiple / single objects), a box containing another dropped; the PoC's, tuned for OWLv2 |
 | `round_size`, `priority`, `max_breadth_rounds`, `coverage_max_new` | None, `area_depth`, 1, 4 | regions per round and their order; coverage rounds |
 | `entity_batch`, `leaf_caption` | 1, `query` | regions per VLM request; leaves captioned by their own request or by the parent's reply |
 | `relational`, `relate` | `both`, `end` | which relational questions; asked once at the end or after every round |
@@ -213,13 +233,34 @@ are the defaults under each job's own.
 | `same_threshold`, `overlap_threshold` | 0.725, 0.85 | same-object check: name-embedding similarity and box overlap |
 | `tag_threshold`, `tag_hint` | 0.35, False | tags as elements of a seeded root; tags in the element prompt |
 
+Control presets are configuration layers in `configs/controls/`: `small`, `mid`, `large` (graph
+size), and `sam3` (SAM 3's selection: `box_score` 0.3, `nms_iou` 0.7; the PoC's 0.2 removes
+overlapping objects, two people embracing at IoU 0.5), stacked after a machine configuration
+(`configs/machine/<m>.py configs/controls/mid.py configs/controls/sam3.py`). On the 30 PoC
+images with SAM 3 (Qwen3.5-4B FP8 on vLLM, one RTX 4090, 64 VLM requests in flight):
+
+| Preset | 30 images | Vertices | Entities | Captions |
+|---|---|---|---|---|
+| small + sam3 | 42.9 s | 10.7 | 6.2 | 18.2 |
+| mid + sam3 | 62.0 s | 14.7 | 8.8 | 26.8 |
+| large + sam3 | 92.8 s | 21.6 | 14.0 | 40.8 |
+| the PoC's graphs (OWLv2) | | 15.2 | 9.4 | 26.3 |
+
 ### The machine
 
 ```mermaid
 flowchart LR
-    src[("source")] --> adm["admission"] --> jobs["image jobs<br/>gbc.kir, out of order"]
-    jobs <-->|"calls"| lanes["lanes<br/>vlm · detect · embed · cpu"] <--> units["engine units<br/>API · vLLM · qwen35 · torch · remote"]
-    jobs --> sink[("graphs.jsonl")]
+    subgraph proc["machine process"]
+        direction LR
+        src[("source")] --> adm["admission"] --> jobs["image jobs<br/>gbc.kir, out of order"]
+        jobs <-->|"calls"| lanes["lanes<br/>vlm · detect · embed · cpu"]
+        lanes <--> conn["connectors<br/>remote units · API units"]
+        jobs --> sink[("graphs.jsonl")]
+    end
+    conn <-->|"shm / inband"| h0["gbc host, card 0<br/>vLLM · SAM 3 · EmbeddingGemma"]
+    conn <-->|"shm / inband"| h1["gbc host, card N"]
+    conn <-->|"TCP"| far["gbc host on another node"]
+    conn <-->|"HTTP"| api["OpenAI-compatible or Anthropic API"]
 ```
 
 Togeari runs each image job like a thread on an out-of-order CPU core: statements issue as soon
@@ -229,25 +270,39 @@ result is exactly the sequential run's. Across jobs, every model call of one kin
 lane: the detect lane batches crops from many images into one forward, the VLM lane keeps its
 units' queues full.
 
-![The GBC machine on 30 recorded images: every engine call per image over time, calls in flight per lane, and one image's overlapping calls](docs/assets/machine.jpg)
+Each lane's units are connectors. With `GBC_HOSTING=process` (the default of
+`configs/machine/qwen35_card.py`), the machine starts one `gbc host` per card running that card's
+engines, and the lane holds a remote unit for each. The dispatcher then has its process's GIL to
+itself: it does not share it with vLLM's frontend or SAM 3's preparation. Images and tensors
+travel in shared-memory blocks, everything else as small messages, and capacity and load are
+reported back at least every 0.2 s
+([engine hosts](docs/internals/engine-host.md)). The same engines in the machine's process
+(`GBC_HOSTING=inprocess`) remain one setting away.
 
-One run of the machine from its event log (`scripts/docs/machine_view.py`): 30 recorded images
-on replay engines at their recorded latencies. Left, each image is a row and each engine call a
-bar on its lane's colour; the images overlap on the shared engines. Right, the VLM lane stays at
-its capacity of 32 until the last images finish, and a single image keeps up to 10 of its own VLM
-requests in flight at once.
+![The GBC machine on one RTX 5090: 240 images, every engine call per image over time, calls in flight per lane, and one image's overlapping calls](docs/assets/machine.jpg)
+
+One run of the machine from its event log (`scripts/docs/machine_view.py`). It is 240 COCO
+images on one RTX 5090 with the defaults of `configs/machine/qwen35_card.py` (engines in a host
+process, 96 resident images), taking 126 s for 19,849 engine calls (1.91 img/s, loading
+excluded). Left, each image is a row and each engine call a bar in its lane's colour. The first
+96 images are admitted at once, and each later image enters as one finishes, so images overlap
+on the shared engines. Right, the VLM lane fills to its 384 lanes as the first images fan out,
+then holds 100–300 requests in flight as images come and go. A single image keeps up to 10 of
+its own VLM requests in flight at once.
 
 | Slot | Node | Lane | Entries |
 |---|---|---|---|
-| `vlm` | `chat` | stream units | `api`, `vllm`, `qwen35` (installed with `examples/qwen35`), `replay`, `remote` |
+| `vlm` | `chat` | stream units | `api`, `vllm`, `qwen35` (the `qwen35` extra), `replay`, `remote` |
 | `detect` | `detector` | batch units | `torch` (OWLv2 or SAM 3), `replay`, `remote` |
 | `embed` | `embedder` | batch units | `torch` (EmbeddingGemma), `replay`, `remote` |
 | `cpu` | crops, pictures, parsing, resolution | worker pool | `python` (threads or processes), `remote` |
 
 Admission keeps the VLM lane at its target load (`vlm_waiting`): an image is admitted while the
-lane's queue and its units' waiting counts are below it. Each slot's entry is selected once; the
-placement plan adds up what every engine holds on every device and refuses a configuration that
-does not fit before any weight loads.
+lane's queue and its units' waiting counts are below it, every other lane in `waiting` is below
+its limit, and fewer than `max_jobs` images are resident. `max_jobs` bounds an image's time in the
+machine (about `max_jobs` / throughput) however long the source runs. Each slot's entry is
+selected once; the placement plan adds up what every engine holds on every device and refuses a
+configuration that does not fit before any weight loads.
 
 ### Engines
 
@@ -255,9 +310,9 @@ does not fit before any weight loads.
 |---|---|---|---|
 | `api` | vlm | any OpenAI-compatible server or Anthropic's Messages API, one unit per endpoint | `flavour` places the JSON schema and turns Qwen3.5's thinking off per server kind; rate limits, health checks, `X-GBC-Request` digests |
 | `vllm` | vlm | vLLM's `AsyncLLM` in this process, one unit per device group | tensor parallel over a unit's devices; its reservation in the placement plan |
-| `qwen35` | vlm | a Qwen3.5 engine written for this workload ([examples/qwen35](examples/qwen35/README.md)) | packed mixed steps over state slots and paged KV, prefix snapshots, Triton kernels raced against references, decode CUDA graphs, xgrammar masks with forced-token jumps, a vision stage of its own |
-| `torch` | detect | OWLv2 (`google/owlv2-base-patch16-ensemble`, the PoC's) or SAM 3 (`facebook/sam3`) | one unit per device; OWLv2 in float16 at batch 1 reproduces the PoC's boxes exactly |
-| `torch` | embed | EmbeddingGemma | batched, normalised |
+| `qwen35` | vlm | a Qwen3.5 engine written for this workload ([kohakugbc_models/vlm/qwen35](src/kohakugbc_models/vlm/qwen35/README.md)) | packed mixed steps over state slots and paged KV, prefix snapshots, Triton kernels raced against references, decode CUDA graphs, xgrammar masks with forced-token jumps, a vision stage of its own |
+| `torch` | detect | OWLv2 (`google/owlv2-base-patch16-ensemble`, the PoC's) or SAM 3 (`facebook/sam3`: GBC's own model, [kohakugbc_models.detect](src/kohakugbc_models/detect)) | one unit per device; OWLv2 in float16 at batch 1 reproduces the PoC's boxes exactly; SAM 3 with fused kernels per arch, CUDA graphs, optional fp8, a measured memory plan |
+| `torch` | embed | EmbeddingGemma (GBC's own model, [kohakugbc_models.embed](src/kohakugbc_models/embed)) | a batch packed into one token stream, varlen attention, CUDA graphs; equal to sentence-transformers' vectors in float32 |
 | `python` | cpu | Togeari's Python workers | threads or processes |
 | `remote` | any | units served by `gbc host` on another node | the lane sees them as local units |
 | `replay` | any | answers from a recorded trace with its recorded latencies | for running the program and the machine without models |
@@ -292,7 +347,7 @@ a small file of overrides.
 | Name | Holds |
 |---|---|
 | `engines` | per slot: `entry` and the entry's settings |
-| `machine` | `vlm_waiting`, `max_jobs`, `window`, `start_timeout_s`, `record` (the fraction of jobs recorded for conformance), `store`, `report` (a run-report folder), `knobs` (any Togeari knob) |
+| `machine` | `vlm_waiting`, `waiting` (`{lane: items}`), `max_jobs`, `window`, `start_timeout_s`, `record` (the fraction of jobs recorded for conformance), `store`, `report` (a run-report folder), `knobs` (any Togeari knob) |
 | `source` | `{"kind": "folder" \| "jsonl" \| "trace", "path": ...}`: images, or jobs with `captions`, `tags` and `controls` per image |
 | `sink` | `{"kind": "graphs", "path": ...}` (graphs, failures, per-job counts) or `{"kind": "memory"}` |
 | `controls` | defaults under every job's own controls |
@@ -307,6 +362,10 @@ Every engine entry, with all its settings: [docs/guides/engines.md](docs/guides/
 (one line per failed job: key, kind, message) and `graphs.stats.jsonl` (per job: vertices by
 kind, edges, captions, depth, leaves). A run report (`machine.report`) holds the configuration,
 the environment, per-second metrics of every lane and unit, events, recorded jobs and a summary.
+
+Captioned images ship as a GBC dataset (`kohakugbc_data.dataset`, in `kohakugbc-data`): sharded
+folders of KohakuClip image shards, graphs and per-image metadata in KohakuVault, joined by key
+([dataset format](docs/guides/dataset.md)).
 
 ## Faithful to GBC
 
@@ -328,8 +387,51 @@ were unseeded, relational questions asked once at the end by default), each diff
 
 ## Measured
 
-All on one desktop: an RTX 4090 (24 GiB), Windows 11, Python 3.13, torch 2.14. Full tables and
-methods: [docs/performance](docs/performance/README.md).
+Full tables and methods: [docs/performance](docs/performance/README.md).
+
+### The machine on RTX 5090s
+
+A Linux box with four RTX 5090s; `configs/machine/qwen35_card.py` with the `mid` and `sam3`
+control presets on COCO val2017. Qwen3.5-4B (FP8, FP8 GDN projections) runs through vLLM 0.32
+with KohakuvLLM's PhasedScheduler, grammar and INT8 GDN state, at 384 lanes and a 12 GiB KV
+cache. GBC's SAM 3 and EmbeddingGemma share the card. 96 images are resident per card, and job
+seconds are each image's time from admission to its graph
+([flagship](docs/performance/flagship.md)):
+
+| Engines | Cards | Images | img/s | Job s p50 / p90 / p99 | GPU busy |
+|---|---|---|---|---|---|
+| in the machine's process | 1 | 1200 | 1.886 | 44 / 58 / 71 | 97.2% |
+| **one engine host per card** (the default) | 1 | 1200 | **2.061** | 41 / 71 / 87 | 98.1% |
+| **one engine host per card** (the default) | 4 | 4800 | **8.165** | 42 / 67 / 84 | 96.2-97.8% |
+
+Both one-card runs make the same engine calls: 16.5k VLM, 11.1k detector and 12.1k embedder.
+The card is power-bound at 98% busy. With the engines in a host, the dispatcher keeps its GIL
+and the detector's queue drains (61 to 14 requests waiting). One machine over four cards gives
+3.96x one card with its job times unchanged. Throughput and job time hold however long the
+source runs, because admission bounds the resident images.
+
+**The VLM behind `vllm serve`**, one RTX 5090, the same workload's 1724 recorded requests
+(about 1000 prompt tokens, 100 reply tokens, one image and one JSON schema each), 512 in flight,
+mean of four cards ([KohakuvLLM](https://github.com/KohakuBlueleaf/KohakuvLLM)):
+
+| Step (`*`: KohakuvLLM) | req/s | Gain |
+|---|---|---|
+| stock vLLM (0.55 of the card, 256 seqs, xgrammar) | 11.4 | |
+| + 0.90 of the card, 384 seqs | 11.7 | +2% |
+| + FP8 GDN projections * | 12.9 | +11% |
+| + bf16 GDN state * | 26.7 | +107% |
+| + our grammar, replacing xgrammar * | 28.8 | +8% |
+| + INT8 GDN state * | 30.1 | +5% |
+| + PhasedScheduler * | **35.0** | **+16%** |
+
+In the machine, the grammar is also the fastest way to get structured replies: 1.589 img/s,
+against 1.539 for prompt + one retry, 1.426 for guidance and 1.226 for xgrammar. On RTX 3090s
+(SmoothQuant INT8, 6 GiB KV cache, the same configuration), the machine gives 0.630 img/s per
+card.
+
+### On one RTX 4090 desktop
+
+An RTX 4090 (24 GiB) on Windows 11, Python 3.13, torch 2.14.
 
 **The machine on pseudo engines** (`scripts/bench/pseudo_machine.py`: 120 recorded jobs per
 configuration, replayed latencies divided by 4). The VLM lane is the limit; the machine keeps it
@@ -353,23 +455,36 @@ the one GPU; wall time includes loading the models):
 | text root | 30 / 30 | 30 / 30 | 89.0 s | 15.97 / 15.17 | 28.43 / 26.07 |
 | image query root | 30 / 30 | 30 / 30 | 102.1 s | 16.03 / 17.13 | 27.40 / 29.63 |
 
-One portrait image on the same GPU: 34 s with OWLv2, 79 s with SAM 3 (the device fills with SAM
-3 beside the VLM).
+One portrait image on the same GPU: 34 s with OWLv2, 79 s with transformers' SAM 3 (the device
+fills with SAM 3 beside the VLM).
 
 **The VLM alone** (`scripts/bench/vlm_units.py`: the 425 VLM requests of the text arm, 409
-measured, 64 in flight, Qwen3.5-4B):
+measured, 64 in flight, Qwen3.5-4B, stock vLLM):
 
 | Engine | Requests/s | Reply tokens/s | Latency p50 / p95 |
 |---|---|---|---|
 | `qwen35` (float32 states) | 7.48 | 828 | 7.51 s / 11.85 s |
 | vLLM 0.32 in WSL | 10.21 | 1101 | 6.18 s / 9.76 s |
 
+### The detector and the embedder
+
+GBC's own SAM 3 and EmbeddingGemma against their reference libraries: 45 recorded detector
+requests through the detect engine and 925 names
+([six GPUs and the CPU](docs/performance/detector.md)):
+
+| GPU | SAM 3, GBC's / transformers' | EmbeddingGemma fp32, GBC's / sentence-transformers' |
+|---|---|---|
+| RTX 4090 (bf16) | 2.41 s / 5.48 s | 6004 / 1472 texts/s |
+| RTX 5090 (bf16) | 1.50 s / 3.44 s | 7307 / 1726 texts/s |
+
 ## Repository layout
 
 ```mermaid
 flowchart LR
-    cli["cli"] --> machine["machine"] --> program["program"] --> nodes["nodes"] --> graph["graph (Python, Rust)"]
-    machine --> engines["engines"] --> togeari["Togeari"]
+    cli["cli"] --> machine["machine"] --> program["program"] --> nodes["nodes"] --> gbcgraph["graph (Python, Rust)"]
+    machine --> togeari["Togeari"]
+    machine --> engines["engines<br/>vlm · torch · host · replay"] --> models["kohakugbc_models<br/>detect · embed · vlm · kernels"]
+    engines --> kvllm["KohakuvLLM"]
     program --> kir["KohakuNodeIR"]
 ```
 
@@ -379,15 +494,24 @@ src/kohakugbc/
   nodes/          the node library gbc: root, regions, relations, specs (chat, detect, parse)
   graph/          records, resolution to GBC graphs, digests
   machine/        build, configuration layers, the machine module
-  engines/        registry, placement, adapters, api/, inprocess/ (vLLM), torch/, host/, replay/
+  engines/        registry, placement, adapters, vlm/ (api, vLLM in-process, qwen35), torch/,
+                  host/, replay/
   io/             sources (folder, jsonl, trace), sinks (graphs, memory)
   cli/            gbc
-src/kohakugbc-rust/   graph resolution in Rust (kohakugbc._rs)
-examples/qwen35/      the qwen35 engine
+src/kohakugbc_models/     the models GBC runs itself, standalone of the program and machine
+  detect/         GBC's own SAM 3 (vision, fusion, masks, memory plan), mask boxes
+  embed/          GBC's own EmbeddingGemma over packed token streams
+  vlm/qwen35/     the Qwen3.5 engine: forward, ops (Triton, FLA), pools, grammar, graphs, loop
+  kernels/        op registry, per-card tuning, CUDA graphs, fp8; backends eager / compile /
+                  triton / tilelang (attention, varlen, box bias, mask box, fp8 producers)
+  numerics/       error profiles against an fp64 ruler
+packages/kohakugbc-data/  the data package (PyPI kohakugbc-data)
+  rust/           kohakugbc_data._rs: graph resolution, the graph store, prompts
+  src/kohakugbc_data/     prompt/ (renderers), dataset/ (the GBC dataset format)
 configs/              machine and engine configurations
-scripts/              trace recording, benchmarks, docs figures
+scripts/              trace recording, benchmarks, docs figures; ci/ (versions, release notes)
 docs/                 concepts, guides, internals, performance
-tests/                program, graph, machine, engines; fixtures: recorded PoC traces
+tests/                data and format checks: program, graph, engines; fixtures: recorded PoC traces
 ```
 
 ## Documentation
@@ -397,27 +521,27 @@ tests/                program, graph, machine, engines; fixtures: recorded PoC t
 | [docs/concepts](docs/concepts/README.md) | what a GBC graph is, the program, the machine, the engines |
 | [docs/guides](docs/guides/README.md) | configuring every engine entry, running on one GPU, over an API, on other nodes |
 | [docs/internals](docs/internals/README.md) | the machine, the placement plan, engines on other nodes, the program and its differences from the PoC, traces, graph resolution |
-| [docs/performance](docs/performance/README.md) | the machine on pseudo engines, on real engines, the VLM engines alone |
-| [examples/qwen35](examples/qwen35/README.md) | the Qwen3.5 engine: settings, design, tests |
+| [docs/performance](docs/performance/README.md) | the machine on pseudo engines, on real engines, the VLM engines alone, the detector and the embedder on six GPUs and the CPU |
+| [docs/internals/kernels.md](docs/internals/kernels.md) | the kernel package: registry, tuning, graphs, fp8, every op per arch |
+| [kohakugbc_models/vlm/qwen35](src/kohakugbc_models/vlm/qwen35/README.md) | the Qwen3.5 engine: settings, design, measuring |
 
 ## Checks
 
 ```
-python -m pytest tests -q -m "not gpu and not serial and not weights" -n auto
-python -m pytest tests -q -m serial                   # wall-clock bounds, alone
-python -m pytest tests -q -m "gpu or weights"         # real models, on cuda:0
-QWEN35_MODEL=path/to/Qwen3.5-4B python -m pytest examples/qwen35/tests
+python -m pytest tests -q                             # data and format checks, CPU only
 python scripts/bench/pseudo_machine.py                # the machine on pseudo engines
+scripts/bench/machine/card.sh CARD TAG                # one machine per card, every metric on disk
 python scripts/bench/real_machine.py configs/machine/qwen35_local.py --name local   # real engines
 python scripts/bench/vlm_units.py --trace runs/traces/poc30/text --name qwen35 --engine '{"entry": "qwen35", "model": "..."}'
 ```
 
-`tests/program` replays recorded jobs of every fixture arm through the reference interpreter and
-compares graphs by digest; `tests/graph` holds both resolutions to ml-gbc's; `tests/machine` runs
-the jobs on replay engines in every configuration (several units, remote units, a unit down
-mid-run, failing requests, units joining and leaving, snapshots and resume); `tests/engines`
-checks every entry against Togeari's engine contract and the vision models against the PoC's
-recorded outputs.
+GBC is a compute project: the tests check data and formats only, and everything else is checked
+by runs on the cards. `tests/program` replays recorded jobs of every fixture arm through the
+reference interpreter and compares graphs by digest; `tests/graph` holds both resolutions to
+ml-gbc's; `tests/engines` checks the API entry's request shapes, the batch formers and SAM 3's
+mask boxes. Engines, kernels and the machine are measured by the benches above, every metric on
+disk ([performance](docs/performance/README.md)). CI checks the code's form (lint, import
+boundary, rustfmt, clippy).
 
 ## Contributing
 

@@ -1,5 +1,5 @@
-"""Check the import boundary between KohakuGBC's layers over every module of src/kohakugbc
-and examples/."""
+"""Check the import boundary between KohakuGBC's layers over every module of src/ (kohakugbc
+and the standalone kohakugbc_models) and of packages/kohakugbc-data (which imports neither)."""
 
 import ast
 import sys
@@ -9,14 +9,50 @@ REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src"
 
 # The program layer: the GBC program, its nodes, the graph; no machine, no engine
-PROGRAM = ("kohakugbc.program", "kohakugbc.nodes", "kohakugbc.graph", "kohakugbc._rs", "kohakunode")
+PROGRAM = (
+    "kohakugbc.program",
+    "kohakugbc.nodes",
+    "kohakugbc.graph",
+    "kohakugbc_data",
+    "kohakunode",
+)
 
 # Package prefix -> allowed import prefixes (beyond the standard library)
 RULES = {
     "kohakugbc.program": PROGRAM,
     "kohakugbc.nodes": PROGRAM,
     "kohakugbc.graph": PROGRAM,
-    "kohakugbc.engines": ("kohakugbc.engines", "kohakugbc.nodes.specs", "togeari"),
+    "kohakugbc.engines": (
+        "kohakugbc.engines",
+        "kohakugbc.nodes.specs",
+        "kohakugbc_models.detect",
+        "kohakugbc_models.embed",
+        "kohakugbc_models.tag",
+        "kohakugbc_models.vlm",
+        "togeari",
+    ),
+    # kohakugbc_models, never importing kohakugbc: the models GBC runs itself (below the
+    # engines) above their kernels, the kernels above the numerics
+    "kohakugbc_models.detect": (
+        "kohakugbc_models.detect",
+        "kohakugbc_models.kernels",
+        "kohakugbc_models.numerics",
+    ),
+    "kohakugbc_models.embed": (
+        "kohakugbc_models.embed",
+        "kohakugbc_models.kernels",
+        "kohakugbc_models.numerics",
+    ),
+    # The tagger runs SAM 3's ViT layers
+    "kohakugbc_models.tag": (
+        "kohakugbc_models.tag",
+        "kohakugbc_models.detect",
+        "kohakugbc_models.kernels",
+        "kohakugbc_models.numerics",
+    ),
+    "kohakugbc_models.vlm": ("kohakugbc_models.vlm",),
+    "kohakugbc_models.kernels": ("kohakugbc_models.kernels", "kohakugbc_models.numerics"),
+    "kohakugbc_models.numerics": ("kohakugbc_models.numerics",),
     "kohakugbc.machine": (
         *PROGRAM,
         "kohakugbc.machine",
@@ -26,10 +62,12 @@ RULES = {
     ),
     "kohakugbc.io": (*PROGRAM, "kohakugbc.io", "togeari"),
     "kohakugbc.cli": ("kohakugbc", "togeari", "kohakunode"),
-    "qwen35": ("qwen35", "kohakugbc.engines", "kohakugbc.nodes.specs", "togeari"),
+    # The data package: graphs and datasets, no machine, no engine, no kohakugbc
+    "kohakugbc_data": ("kohakugbc_data",),
 }
 
-# Third-party packages each part may use; torch, transformers and vllm only in engines
+# Third-party packages each part may use; torch, transformers and vllm only in the engines and
+# the models below them
 EXTRAS = {
     "kohakugbc.program": ("PIL", "numpy"),
     "kohakugbc.nodes": ("PIL", "numpy", "scipy", "hbutils", "supervision"),
@@ -41,10 +79,25 @@ EXTRAS = {
         "torch",
         "transformers",
         "sentence_transformers",
+        "inflect",
         "vllm",
+        "kohakuvllm",
     ),
     "kohakugbc.io": ("PIL", "numpy", "pyarrow"),
-    "qwen35": (
+    "kohakugbc_data": ("PIL", "numpy", "pyarrow", "kohakuvault"),
+    "kohakugbc_models.detect": (
+        "PIL",
+        "numpy",
+        "torch",
+        "transformers",
+        "huggingface_hub",
+        "safetensors",
+    ),
+    "kohakugbc_models.embed": ("numpy", "torch", "transformers", "huggingface_hub", "safetensors"),
+    "kohakugbc_models.tag": ("PIL", "numpy", "torch", "huggingface_hub", "safetensors"),
+    "kohakugbc_models.kernels": ("torch", "triton", "tilelang"),
+    "kohakugbc_models.numerics": ("torch",),
+    "kohakugbc_models.vlm": (
         "PIL",
         "numpy",
         "torch",
@@ -59,7 +112,7 @@ EXTRAS = {
 }
 
 # Source roots scanned; a module's name is its path under its root
-ROOTS = [SRC, REPO / "examples" / "qwen35" / "src"]
+ROOTS = [SRC, REPO / "packages" / "kohakugbc-data" / "src"]
 
 
 def module_name(root: Path, path: Path) -> str:

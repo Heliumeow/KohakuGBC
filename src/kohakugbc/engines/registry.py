@@ -1,19 +1,23 @@
 """Engine slots and their entries, selected once when the machine is built.
 
 A slot is one kind of work the program sends out: ``vlm`` (``chat``), ``detect``
-(``detector``), ``embed`` (``embedder``) and ``cpu`` (plain nodes heavier than the dispatcher
-should run). An entry fills a slot: ``entry(slot, name)`` registers a factory, and the machine's
-engine configuration names one entry per slot with its settings,
+(``detector``), ``embed`` (``embedder``), ``tag`` (``tagger``) and ``cpu`` (plain nodes heavier
+than the dispatcher should run). An entry fills a slot: ``entry(slot, name)`` registers a
+factory, and the machine's engine configuration names one entry per slot with its settings,
 ``{"vlm": {"entry": "replay", "trace": "..."}, ...}``. Nothing dispatches on the entry after
-the build.
+the build. An ``OPTIONAL`` slot the configuration leaves out has no lane (its node is only
+reached under controls that ask for it).
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-SLOTS = ("vlm", "detect", "embed", "cpu")
-NODES = {"vlm": "chat", "detect": "detector", "embed": "embedder"}
+from kohakugbc.engines import spawn
+
+SLOTS = ("vlm", "detect", "embed", "tag", "cpu")
+NODES = {"vlm": "chat", "detect": "detector", "embed": "embedder", "tag": "tagger"}
+OPTIONAL = ("tag",)
 
 ENTRIES: dict[tuple[str, str], Callable[[dict, dict], "Slot"]] = {}
 
@@ -66,10 +70,16 @@ def build_slot(slot: str, settings: dict | None, shared: dict) -> Slot:
 
 
 def build(engines: dict) -> dict[str, Slot]:
-    """Every slot's ``Slot`` from the engine configuration; every problem in one error."""
+    """Every slot's ``Slot`` from the engine configuration; every problem in one error.
+    ``engines["hosts"]`` (name -> ``{"env", "engines"}``): engine host processes started
+    first, all at once, for the slots' ``remote`` entries to name."""
     shared: dict = {}
+    if engines.get("hosts"):
+        shared["hosts"] = spawn.launch_all(engines["hosts"])
     problems, out = [], {}
     for slot in SLOTS:
+        if slot in OPTIONAL and engines.get(slot) is None:
+            continue
         try:
             out[slot] = build_slot(slot, engines.get(slot), shared)
         except ValueError as exc:

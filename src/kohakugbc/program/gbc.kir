@@ -54,10 +54,12 @@
 @def (image, region, replies, seen, controls)expand(record, found, seen, target):
     record = None
     found = []
-    (region)name_of(text)
-    @hint lane="embed"
-    (text)embedder(vec)
-    (seen, region, vec, controls)register(seen, is_new, target)
+    (seen, region, controls)embed_needs(texts)
+    (texts)collect(text, `embed`, vec -> vecs)
+    embed:
+        @hint lane="embed"
+        (text)embedder(vec)
+    (seen, region, texts, vecs, controls)register(seen, is_new, target)
     (is_new)branch(`new`, `known`)
     new:
         (region, replies)answer_from(how)
@@ -135,13 +137,13 @@
     (records)drop_relational(records)
     @hint lane="cpu"
     (image, records, controls)relational_queries(queries)
-    (queries)each(q, `one`)
+    (queries)collect(q, `one`, record -> answered)
     one:
         @hint lane="cpu"
         (image, q, controls)relational_request(request)
         (request)ask(reply)
         (q, request, reply)relational_record(record)
-        (records, record)attach(records)
+    (records, answered)extend(records)
 
 ## The job: one image in, one GBC graph out.
 @def (image, captions = None, tags = None, controls = None)gbc(graph, stats):
@@ -159,7 +161,11 @@
     ()jump(`decide`)
     decide:
         (records, frontier, rounds, breadth, stop, controls)next_step(step)
-        (step)switch("depth"=>`depth`, "breadth"=>`widen`, _=>`done`)
+        (step)switch("depth"=>`deepen`, "breadth"=>`widen`, _=>`done`)
+        # `depth` is entered by jumps only (a graph cannot draw a namespace that a builtin
+        # and a jump both enter)
+        deepen:
+            ()jump(`depth`)
         widen:
             (breadth, 1)add(breadth)
             (image, records, controls)coverage(records, found, grew)
@@ -185,3 +191,13 @@
     related:
     @hint lane="cpu"
     (image, records, controls)to_gbc(graph, stats)
+    (controls)tag_mode(tagging)
+    (tagging)branch(`tag`, `untagged`)
+    tag:
+        @hint lane="cpu"
+        (image, graph, tags, controls)tag_request(request)
+        @hint lane="tag"
+        (request)tagger(scores)
+        @hint lane="cpu"
+        (graph, stats, scores, tags, controls)place_tags(graph, stats)
+    untagged:

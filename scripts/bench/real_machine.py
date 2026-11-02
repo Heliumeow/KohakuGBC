@@ -52,7 +52,11 @@ def run(layers: list[str], arm: str, args) -> dict:
     trace_dir = Path(args.traces) / arm
     out = Path(args.out) / args.name / arm
     overlay = {
-        "source": {"kind": "trace", "path": str(trace_dir)},
+        "source": {
+            "kind": "trace",
+            "path": str(trace_dir),
+            "override_controls": args.override_controls,
+        },
         "sink": {"kind": "memory"},
         "machine": {"report": str(out / "report"), "record": 1.0},
     }
@@ -71,8 +75,9 @@ def run(layers: list[str], arm: str, args) -> dict:
     with open(out / "graphs.jsonl", "w", encoding="utf-8") as f:
         f.writelines(r.outputs["graph"] + "\n" for r in ok)
     with open(out / "failures.jsonl", "w", encoding="utf-8") as f:
-        f.writelines(json.dumps({"key": r.key, **(r.failure or {})}) + "\n"
-                     for r in records if not r.ok)  # fmt: skip
+        f.writelines(
+            json.dumps({"key": r.key, **(r.failure or {})}) + "\n" for r in records if not r.ok
+        )
     ours = [json.loads(r.outputs["graph"]) for r in ok]
     poc = [job["graph"] for job in Trace(trace_dir).jobs.values()]
     return {
@@ -96,6 +101,11 @@ def main() -> int:
     parser.add_argument("--arms", nargs="*", default=["text", "query"])
     parser.add_argument("--traces", default="runs/traces/poc30")
     parser.add_argument("--out", default="runs/bench/real")
+    parser.add_argument(
+        "--override-controls",
+        action="store_true",
+        help="the layers' controls over the recorded jobs' own (a size preset, for one)",
+    )
     args = parser.parse_args()
     config.load(*args.configs)  # fails early on a bad layer
     rows = []
