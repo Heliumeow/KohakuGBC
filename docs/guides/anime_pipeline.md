@@ -3,6 +3,8 @@
 This guide covers the two-stage anime image annotation pipeline in KohakuGBC, integrating
 **CLTagger** (Anime ONNX classifier) and **Ultralytics YOLO Ensemble** (anime face/eye/body/accessory spatial priors) with **KohakuGBC** (VLM + OWLv2/SAM 3 scene graph generation) and the interactive HTML visualizer.
 
+[中文文档](anime_pipeline_zh.md)
+
 ---
 
 ## 1. Overview & Architecture
