@@ -44,8 +44,8 @@ def merge_yolo_to_graph(graph_data: dict, yolo_detections: list[dict]) -> dict:
     for det in yolo_detections:
         cls_name = det["class"]
 
-        # If detection is 'person' and we already have a character parent vertex, enrich it directly
-        if cls_name == "person" and parent_vid:
+        # If detection is 'person' or 'character' and we already have a character parent vertex, enrich it directly
+        if cls_name in ("person", "character") and parent_vid:
             for v in vertices:
                 if v.get("vertex_id") == parent_vid:
                     if det.get("descs"):

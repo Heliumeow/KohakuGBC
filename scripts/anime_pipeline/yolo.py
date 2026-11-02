@@ -10,13 +10,14 @@ from .utils import WORKSPACE_ROOT
 
 DEFAULT_PRESETS: dict[str, dict] = {
     "anime-sfw": {
-        "description": "Anime general/all-ages: eyes, face, mouth, jewelry, hands, hair",
+        "description": "Anime general/all-ages: eyes, face, mouth, jewelry, hands, hair, person/objects",
         "models": [
             "Eyes.pt",
             "adetailer2dMouth_v10.pt",
             "jewelryDetector_v021.pt",
             "yolo26s-face.pt",
             "yolo26s-person.pt",
+            "yolo26x.pt",
         ],
         "include_patterns": [
             "*eye*",
@@ -28,6 +29,7 @@ DEFAULT_PRESETS: dict[str, dict] = {
             "*accessory*",
             "*person*",
             "*head*",
+            "*yolo26x*",
         ],
         "exclude_patterns": [
             "*cock*",
@@ -42,7 +44,7 @@ DEFAULT_PRESETS: dict[str, dict] = {
         ],
     },
     "anime-nsfw": {
-        "description": "Anime adult/NSFW: SFW features plus breasts, nipples, penis, genitalia",
+        "description": "Anime adult/NSFW: SFW features plus breasts, nipples, penis, genitalia, person/objects",
         "models": [
             "Eyes.pt",
             "adetailer2dMouth_v10.pt",
@@ -50,6 +52,9 @@ DEFAULT_PRESETS: dict[str, dict] = {
             "breasts_seg.pt",
             "nipples_v2_yolov11s-seg.pt",
             "cockAndBallDetection2D_v20.pt",
+            "yolo26s-face.pt",
+            "yolo26s-person.pt",
+            "yolo26x.pt",
         ],
         "include_patterns": ["*"],
         "exclude_patterns": ["*real*", "*photo*"],

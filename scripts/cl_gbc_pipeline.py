@@ -123,7 +123,7 @@ def main() -> None:
     parser.add_argument("--yolo-imgsz", type=int, default=1280, help="Inference resolution for YOLO models (default: 1280)")
     parser.add_argument("--yolo-device", default="auto", help="Device for YOLO models: 'auto', 'cuda:0', or 'cpu' (default: auto)")
     parser.add_argument("--describe-yolo", action=argparse.BooleanOptionalAction, default=True, help="Use VLM to describe YOLO-detected regions in detail (default: True)")
-    parser.add_argument("--yolo-vlm-workers", type=int, default=4, help="Concurrent workers for VLM crop descriptions (default: 4)")
+    parser.add_argument("--yolo-vlm-workers", type=int, default=1, help="Concurrent workers for VLM crop descriptions (default: 1)")
     parser.add_argument("--export-moss", action="store_true", help="Export dataset in OpenMOSS Layout draft & compiled prompt format")
     parser.add_argument(
         "--moss-granularity",

@@ -31,6 +31,28 @@ CLS_ZH_MAP: dict[str, str] = {
     "choker": "颈饰/项圈",
     "hand": "手部姿态",
     "hands": "手部姿态",
+    # Common COCO object classes for anime/illustration scenes
+    "cat": "猫咪/宠物",
+    "dog": "小狗/犬类",
+    "bird": "飞鸟/羽翼",
+    "backpack": "双肩背包/背包",
+    "umbrella": "雨伞/洋伞",
+    "handbag": "手提包/手袋",
+    "tie": "领带/领结",
+    "suitcase": "行李箱/手提箱",
+    "bottle": "水瓶/药水瓶",
+    "cup": "水杯/茶杯",
+    "chair": "椅子/座椅",
+    "couch": "沙发/软榻",
+    "bed": "床铺/卧榻",
+    "dining table": "桌台/桌面",
+    "laptop": "笔记本电脑/终端",
+    "cell phone": "手机/通讯终端",
+    "book": "书籍/书本",
+    "clock": "时钟/挂钟",
+    "vase": "花瓶/瓶饰",
+    "knife": "小刀/短刃",
+    "sword": "佩剑/长剑",
 }
 
 
@@ -48,6 +70,7 @@ def clean_vlm_text(text: str) -> str:
     t = re.sub(r"^Check\s+.*?[.:]\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(r"^Good\.\s*\"?.*?[.:\"]?\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(r"^Fits well.*?[.:]\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^Refinement(?:\s*\(.*?\))?\s*:\s*", "", t, flags=re.IGNORECASE)
     t = t.strip("\"'“” ")
     return t.strip()
 
@@ -98,6 +121,17 @@ def extract_caption_from_reasoning(reasoning: str, cls_name: str, language: str 
         if len(det_val) > 8:
             return det_val[:300], short_val[:60]
 
+    # Try draft extraction from reasoning rehearsal blocks
+    if language == "zh":
+        m_draft = re.search(r"(?:\*+详细\*+|详细描述|\*+草稿\*+)[：:]\s*(.+?)(?:\s*\(\d+字\)|->|[。\n])", reasoning)
+        m_short_draft = re.search(r"(?:\*+简短\*+|简短[：:]|\*+概括\*+)[：:]\s*(.+?)(?:\s*\(\d+字\)|->|[。\n])", reasoning)
+        if m_draft and len(m_draft.group(1).strip()) > 10:
+            d_txt = m_draft.group(1).strip().strip("\"'“” ")
+            if not d_txt.endswith("。"):
+                d_txt += "。"
+            s_txt = m_short_draft.group(1).strip().strip("\"'“” ") if m_short_draft else f"{cls_zh}细节"
+            return d_txt[:300], s_txt[:60]
+
     clean = re.sub(r"[\*\#\`]", "", reasoning)
     sentences = [s.strip() for s in re.split(r"(?<=[.!?。！？\n])\s+", clean) if len(s.strip()) > 15]
     good_s = [
@@ -107,13 +141,23 @@ def extract_caption_from_reasoning(reasoning: str, cls_name: str, language: str 
         and not s.lower().startswith("we need")
         and not s.lower().startswith("good.")
         and not s.lower().startswith("check")
+        and not s.lower().startswith("or:")
         and not s.startswith("用户")
         and not s.startswith("我们需要")
         and not s.startswith("分析")
+        and not s.startswith("最终选择")
+        and not s.startswith("挑选")
+        and not s.startswith("选择")
+        and not s.startswith("草稿")
+        and not re.search(r"\(\d+\)", s)
+        and not re.search(r"chars?\)", s, flags=re.IGNORECASE)
+        and not re.search(r"字数?\)", s)
+        and not re.search(r"字[：:]", s)
         and "json" not in s.lower()
         and "caption" not in s.lower()
         and "formatting" not in s.lower()
         and "fits well" not in s.lower()
+        and "no," not in s.lower()
         and (language != "zh" or bool(re.search(r"[\u4e00-\u9fff]", s)))
     ]
     if good_s:
@@ -376,9 +420,17 @@ def describe_yolo_detections(
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         if language == "zh":
-            prompt_focus = f"角色【{cls_zh}】部位"
-            if char_context:
-                prompt_focus = f"角色【{char_context}】的【{cls_zh}】部位"
+            is_person = cls_name.lower() in ("person", "character")
+            is_part = any(k in cls_name.lower() for k in ["eye", "mouth", "face", "hair", "breast", "hand", "head", "ear", "nose"])
+            if is_person:
+                prompt_focus = f"角色【{char_context}】的人物主体立绘" if char_context else f"【{cls_zh}】立绘区域"
+                rule_desc = "1. 纯粹聚焦该局部切片本身：描述人物身材体态、服装造型风格（衣着版型与材质色彩）、发色发型及标志性装饰。\n"
+            elif is_part:
+                prompt_focus = f"角色【{char_context}】的【{cls_zh}】部位" if char_context else f"角色【{cls_zh}】部位"
+                rule_desc = "1. 纯粹聚焦该局部切片本身：描述切片内清晰可见的微观美术特征（如眼睑弧度/睫毛/瞳孔反光高光、唇峰曲线/光泽、发丝分簇质感、面部微晕或饰品雕纹）。\n"
+            else:
+                prompt_focus = f"画面中的【{cls_zh}】物件"
+                rule_desc = f"1. 纯粹聚焦该局部切片本身：描述该【{cls_zh}】的外观形制、材质质感、色彩风格与视觉细节。\n"
 
             context_header = ""
             if global_context:
@@ -393,7 +445,7 @@ def describe_yolo_detections(
                 f"{context_header}【局部特征分析任务（纯度聚焦）】：\n"
                 f"请仔细观察从整幅画面中裁剪出的{prompt_focus}区域。\n"
                 "【观察重点与隔离约束】：\n"
-                "1. 纯粹聚焦该局部切片本身：描述切片内清晰可见的微观美术特征（如眼睑弧度/睫毛/瞳孔反光高光、唇峰曲线/光泽、发丝分簇质感、面部微晕或饰品雕纹）。\n"
+                f"{rule_desc}"
                 "2. 局部纯度隔离：严禁在描述中复述切片外部的无关大图背景（如远景大楼、天空、天体等）。\n"
                 "3. 篇幅约束：输出 1-2 句符合二次元美术术语的紧凑生动描述（40-70字）。\n\n"
                 "直接返回合法的 JSON 对象，仅包含两个键：\n"
