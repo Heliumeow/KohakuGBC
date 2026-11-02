@@ -34,6 +34,7 @@ try:
         build_fast_yolo_graph,
         check_vlm_reachability,
         collect_images,
+        describe_full_image,
         describe_yolo_detections,
         export_moss_dataset,
         merge_yolo_to_graph,
@@ -47,6 +48,7 @@ except ImportError:
         build_fast_yolo_graph,
         check_vlm_reachability,
         collect_images,
+        describe_full_image,
         describe_yolo_detections,
         export_moss_dataset,
         merge_yolo_to_graph,
@@ -204,27 +206,46 @@ def main() -> None:
             yolo_file.write_text(json.dumps(yolo_results_by_img, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"[+] Saved YOLO spatial priors to: {yolo_file}")
 
-            # Stage 1c: VLM visual descriptions for YOLO crops
-            if args.describe_yolo:
-                vlm_endpoint = os.environ.get("VLM_ENDPOINT", "http://127.0.0.1:8080/v1")
-                if check_vlm_reachability(vlm_endpoint):
-                    for item in tag_results:
-                        img_k = item.get("image", "")
-                        p = Path(img_k)
-                        dets = yolo_results_by_img.get(img_k, [])
-                        if dets:
-                            top_chars = list(item.get("tags", {}).get("character", {}).keys())
-                            char_ctx = top_chars[0] if top_chars else None
-                            described_dets = describe_yolo_detections(
-                                image_path=p,
-                                detections=dets,
-                                endpoint=vlm_endpoint,
-                                max_workers=args.yolo_vlm_workers,
-                                char_context=char_ctx,
-                                language=args.language,
-                            )
-                            yolo_results_by_img[img_k] = described_dets
-                    yolo_file.write_text(json.dumps(yolo_results_by_img, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Stage 1c: VLM visual descriptions (Global Image & YOLO crops)
+    vlm_endpoint = os.environ.get("VLM_ENDPOINT", "http://127.0.0.1:8080/v1")
+    vlm_ready = check_vlm_reachability(vlm_endpoint)
+    global_descs: dict[str, dict] = {}
+
+    if vlm_ready:
+        print(f"\n[*] Generating global visual descriptions with VLM ({args.language})...")
+        for item in tag_results:
+            img_k = item.get("image", "")
+            p = Path(img_k)
+            g_desc = describe_full_image(
+                image_path=p,
+                tag_item=item,
+                endpoint=vlm_endpoint,
+                language=args.language,
+            )
+            global_descs[img_k] = g_desc
+            item["global_caption"] = g_desc
+            print(f"[VLM Global] {p.name}: {g_desc.get('short_caption', '')}")
+
+    if not args.no_yolo and args.describe_yolo and vlm_ready:
+        for item in tag_results:
+            img_k = item.get("image", "")
+            p = Path(img_k)
+            dets = yolo_results_by_img.get(img_k, [])
+            if dets:
+                top_chars = list(item.get("tags", {}).get("character", {}).keys())
+                char_ctx = top_chars[0] if top_chars else None
+                global_ctx = global_descs.get(img_k, {}).get("detailed_caption")
+                described_dets = describe_yolo_detections(
+                    image_path=p,
+                    detections=dets,
+                    endpoint=vlm_endpoint,
+                    max_workers=args.yolo_vlm_workers,
+                    char_context=char_ctx,
+                    global_context=global_ctx,
+                    language=args.language,
+                )
+                yolo_results_by_img[img_k] = described_dets
+        yolo_file.write_text(json.dumps(yolo_results_by_img, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # Inject spatial priors into tag_results
     for item in tag_results:
@@ -237,11 +258,19 @@ def main() -> None:
     print(f"\n[+] Saved preliminary tags & priors to: {input_file}")
 
     if args.no_gbc:
-        print("\n[*] --no-gbc specified. Generating fast scene graph from priors...")
+        print("\n[*] --no-gbc specified. Generating fast scene graph from priors & VLM descriptions...")
         fast_graphs = []
         for item in tag_results:
-            img_p = Path(item["image"])
-            fast_g = build_fast_yolo_graph(img_p, item, item.get("spatial_priors", []), language=args.language)
+            img_k = item.get("image", "")
+            img_p = Path(img_k)
+            g_desc = global_descs.get(img_k)
+            fast_g = build_fast_yolo_graph(
+                img_p,
+                item,
+                item.get("spatial_priors", []),
+                language=args.language,
+                global_desc=g_desc,
+            )
             fast_graphs.append(fast_g)
 
         with open(graphs_file, "w", encoding="utf-8") as f:
@@ -265,8 +294,8 @@ def main() -> None:
         report_dir=output_dir / "report",
     )
 
-    # Post-process: merge YOLO detections into KohakuGBC graphs
-    if yolo_results_by_img:
+    # Post-process: merge YOLO detections and update Chinese global caption
+    if yolo_results_by_img or global_descs:
         merged_lines = []
         with open(graphs_file, "r", encoding="utf-8") as f:
             for line in f:
@@ -275,7 +304,19 @@ def main() -> None:
                 g_data = json.loads(line)
                 img_key = g_data.get("img_path", "")
                 y_dets = yolo_results_by_img.get(img_key, [])
-                merged_g = merge_yolo_to_graph(g_data, y_dets)
+                merged_g = merge_yolo_to_graph(g_data, y_dets) if y_dets else g_data
+
+                # Inject Chinese global captions into root vertex if language is zh
+                g_desc = global_descs.get(img_key)
+                if g_desc and args.language == "zh":
+                    merged_g["detail_caption"] = g_desc.get("detailed_caption", merged_g.get("detail_caption"))
+                    merged_g["short_caption"] = g_desc.get("short_caption", merged_g.get("short_caption"))
+                    for v in merged_g.get("vertices", []):
+                        if v.get("vertex_id") == "" or v.get("label") == "image":
+                            v["descs"] = [
+                                {"label": "detail", "text": g_desc.get("detailed_caption", "")},
+                                {"label": "short", "text": g_desc.get("short_caption", "")},
+                            ]
                 merged_lines.append(json.dumps(merged_g, ensure_ascii=False) + "\n")
         with open(graphs_file, "w", encoding="utf-8") as f:
             f.writelines(merged_lines)

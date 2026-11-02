@@ -43,6 +43,17 @@ def merge_yolo_to_graph(graph_data: dict, yolo_detections: list[dict]) -> dict:
 
     for det in yolo_detections:
         cls_name = det["class"]
+
+        # If detection is 'person' and we already have a character parent vertex, enrich it directly
+        if cls_name == "person" and parent_vid:
+            for v in vertices:
+                if v.get("vertex_id") == parent_vid:
+                    if det.get("descs"):
+                        v["descs"] = det["descs"]
+                    v["bbox"] = det["bbox"]
+                    break
+            continue
+
         idx = class_counts.get(cls_name, 0)
         class_counts[cls_name] = idx + 1
 
@@ -102,6 +113,7 @@ def build_fast_yolo_graph(
     tag_item: dict,
     yolo_dets: list[dict],
     language: str = "zh",
+    global_desc: dict | None = None,
 ) -> dict:
     """Build a lightweight scene graph from CLTagger tags and YOLO detections without running VLM/GBC."""
     tags_info = tag_item.get("tags", {})
@@ -113,7 +125,13 @@ def build_fast_yolo_graph(
     sorted_copys = [t for t, _ in sorted(copy_dict.items(), key=lambda kv: -kv[1])]
     sorted_gens = [t for t, _ in sorted(gen_dict.items(), key=lambda kv: -kv[1])][:15]
 
-    if language == "zh":
+    if global_desc and global_desc.get("detailed_caption"):
+        detail_cap = global_desc["detailed_caption"]
+        char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "二次元动漫角色"
+        copy_str = f"（出自《{', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}》）" if sorted_copys else ""
+        short_cap = global_desc.get("short_caption") or (char_str if language == "zh" else "Anime character")
+        char_desc_text = f"二次元角色【{char_str}】{copy_str}。{short_cap}" if language == "zh" else f"Character {char_str}{copy_str}. {short_cap}"
+    elif language == "zh":
         char_str = ", ".join(t.replace("_", " ") for t in sorted_chars[:3]) if sorted_chars else "二次元动漫角色"
         copy_str = f"（出自《{', '.join(t.replace('_', ' ') for t in sorted_copys[:2])}》）" if sorted_copys else ""
         top_tags_str = "、".join(t.replace("_", " ") for t in sorted_gens)
@@ -152,7 +170,11 @@ def build_fast_yolo_graph(
     elif "1boy" in sorted_gens:
         char_vid = "boy"
 
-    if yolo_dets:
+    person_dets = [d for d in yolo_dets if d.get("class") in ("person", "character")]
+    if person_dets:
+        best_p = max(person_dets, key=lambda d: d.get("conf", 0))
+        char_bbox = dict(best_p["bbox"])
+    elif yolo_dets:
         xs = [d["bbox"]["left"] for d in yolo_dets] + [d["bbox"]["right"] for d in yolo_dets]
         ys = [d["bbox"]["top"] for d in yolo_dets] + [d["bbox"]["bottom"] for d in yolo_dets]
         pad = 0.05

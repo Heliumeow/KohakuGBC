@@ -11,7 +11,13 @@ from .utils import WORKSPACE_ROOT
 DEFAULT_PRESETS: dict[str, dict] = {
     "anime-sfw": {
         "description": "Anime general/all-ages: eyes, face, mouth, jewelry, hands, hair",
-        "models": ["Eyes.pt", "adetailer2dMouth_v10.pt", "jewelryDetector_v021.pt"],
+        "models": [
+            "Eyes.pt",
+            "adetailer2dMouth_v10.pt",
+            "jewelryDetector_v021.pt",
+            "yolo26s-face.pt",
+            "yolo26s-person.pt",
+        ],
         "include_patterns": [
             "*eye*",
             "*mouth*",
@@ -20,6 +26,8 @@ DEFAULT_PRESETS: dict[str, dict] = {
             "*hair*",
             "*hand*",
             "*accessory*",
+            "*person*",
+            "*head*",
         ],
         "exclude_patterns": [
             "*cock*",

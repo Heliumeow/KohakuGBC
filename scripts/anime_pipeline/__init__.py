@@ -21,7 +21,13 @@ from .moss_exporter import (
     graph_to_moss_draft,
 )
 from .utils import WORKSPACE_ROOT, collect_images, normalize_path
-from .vlm_descriptor import describe_yolo_detections, extract_caption_from_reasoning, parse_vlm_json
+from .vlm_descriptor import (
+    clean_vlm_text,
+    describe_full_image,
+    describe_yolo_detections,
+    extract_caption_from_reasoning,
+    parse_vlm_json,
+)
 from .yolo import DEFAULT_PRESETS, UltralyticsEnsemble, load_presets, resolve_auto_preset
 
 __all__ = [
@@ -38,6 +44,8 @@ __all__ = [
     "UltralyticsEnsemble",
     "parse_vlm_json",
     "extract_caption_from_reasoning",
+    "clean_vlm_text",
+    "describe_full_image",
     "describe_yolo_detections",
     "merge_yolo_to_graph",
     "build_fast_yolo_graph",

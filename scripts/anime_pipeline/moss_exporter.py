@@ -283,6 +283,7 @@ def graph_to_moss_draft(
     sub_parts_keywords = {
         "eyes", "eye", "mouth", "nose", "hand", "hands", "ear", "ears",
         "breast", "breasts", "penis", "pussy", "jewelry", "eyebrow", "hair",
+        "face", "head", "accessory", "collar", "choker",
     }
 
     # Find parent character vertices from edges and sub_masks
