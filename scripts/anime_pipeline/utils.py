@@ -37,3 +37,4 @@ def collect_images(paths_or_dirs: list[str]) -> list[Path]:
         else:
             print(f"[Warning] Path not found: {p}", file=sys.stderr)
     return collected
+

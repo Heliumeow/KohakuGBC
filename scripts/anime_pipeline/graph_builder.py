@@ -163,3 +163,4 @@ def build_fast_yolo_graph(img_path: Path, tag_item: dict, yolo_dets: list[dict])
 
     merge_yolo_to_graph(graph, yolo_dets)
     return graph
+

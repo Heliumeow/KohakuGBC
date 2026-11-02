@@ -89,6 +89,11 @@ def main() -> None:
     parser.add_argument("--yolo-dir", default=None, help="Directory containing Ultralytics YOLO models (default: models/ultralytics)")
     parser.add_argument("--yolo-models", nargs="*", default=None, help="Specific YOLO model names to use (default: use all models in yolo-dir)")
     parser.add_argument("--no-yolo", action="store_true", help="Disable Ultralytics YOLO spatial priors")
+    parser.add_argument(
+        "--yolo-preset",
+        default="anime-sfw",
+        help="YOLO model preset: 'anime-sfw' (default), 'anime-nsfw', 'real', 'all', or 'auto'",
+    )
     parser.add_argument("--yolo-conf", type=float, default=0.20, help="Confidence threshold for YOLO detections (default: 0.20)")
     parser.add_argument("--yolo-imgsz", type=int, default=1280, help="Inference resolution for YOLO models (default: 1280)")
     parser.add_argument("--yolo-device", default="auto", help="Device for YOLO models: 'auto', 'cuda:0', or 'cpu' (default: auto)")
@@ -144,7 +149,9 @@ def main() -> None:
     if not args.no_yolo:
         yolo_ensemble = UltralyticsEnsemble(
             model_dir=args.yolo_dir,
+            preset=args.yolo_preset,
             model_names=args.yolo_models,
+            tag_hint=tag_results,
             device=args.yolo_device,
             conf=args.yolo_conf,
             imgsz=args.yolo_imgsz,

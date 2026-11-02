@@ -175,3 +175,4 @@ def run_cl_tagger(
         print(f"  Top Visual Tags: {top_gen_str}")
 
     return results
+

@@ -1,0 +1,77 @@
+{
+  "$schema": "Preset configuration for Ultralytics YOLO models in KohakuGBC",
+  "presets": {
+    "anime-sfw": {
+      "description": "Anime all-ages/general illustrations: eyes, mouth, jewelry, face, hair, hands",
+      "models": [
+        "Eyes.pt",
+        "adetailer2dMouth_v10.pt",
+        "jewelryDetector_v021.pt"
+      ],
+      "include_patterns": [
+        "*eye*",
+        "*mouth*",
+        "*face*",
+        "*jewelry*",
+        "*hair*",
+        "*hand*",
+        "*accessory*"
+      ],
+      "exclude_patterns": [
+        "*cock*",
+        "*ball*",
+        "*penis*",
+        "*pussy*",
+        "*vagina*",
+        "*nipple*",
+        "*cum*",
+        "*nude*",
+        "*nsfw*"
+      ]
+    },
+    "anime-nsfw": {
+      "description": "Anime adult/NSFW concepts: SFW features plus breasts, nipples, penis, genitalia",
+      "models": [
+        "Eyes.pt",
+        "adetailer2dMouth_v10.pt",
+        "jewelryDetector_v021.pt",
+        "breasts_seg.pt",
+        "nipples_v2_yolov11s-seg.pt",
+        "cockAndBallDetection2D_v20.pt"
+      ],
+      "include_patterns": [
+        "*"
+      ],
+      "exclude_patterns": [
+        "*real*",
+        "*photo*"
+      ]
+    },
+    "real": {
+      "description": "Real-world photography & realistic human subjects",
+      "models": [
+        "yolov8n-face.pt",
+        "yolo11n-face.pt"
+      ],
+      "include_patterns": [
+        "*real*",
+        "*photo*",
+        "*face*"
+      ],
+      "exclude_patterns": [
+        "*adetailer2d*",
+        "*2d*"
+      ]
+    },
+    "all": {
+      "description": "Load all available Ultralytics YOLO models in models/ultralytics",
+      "models": [
+        "*"
+      ],
+      "include_patterns": [
+        "*"
+      ],
+      "exclude_patterns": []
+    }
+  }
+}

@@ -66,16 +66,89 @@ Run the complete pipeline on a single image (supports Windows paths `C:\...` or 
 .venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --no-gbc
 ```
 
-### 2.3 Ultralytics YOLO Spatial Priors (`models/ultralytics/`)
+### 2.3 Ultralytics YOLO Spatial Priors & Presets (`models/ultralytics/`)
 
-Place any specialized YOLO models (e.g. `Eyes.pt`, `adetailer2dMouth_v10.pt`, `breasts_seg.pt`, `jewelryDetector_v021.pt`) into `models/ultralytics/`.
+Place specialized YOLO models (e.g. `Eyes.pt`, `adetailer2dMouth_v10.pt`, `breasts_seg.pt`, `jewelryDetector_v021.pt`) into `models/ultralytics/`.
 
-- **Default behavior**: The pipeline automatically discovers and runs **all** `.pt` and `.onnx` models in `models/ultralytics/` on every image.
-- **Custom selection**: Pass `--yolo-models model1.pt model2.pt` to activate only specific models.
-- **Disable YOLO**: Pass `--no-yolo` to skip YOLO spatial priors.
-- **Tuning knobs**: Adjust confidence with `--yolo-conf 0.20` and resolution with `--yolo-imgsz 1280`.
+#### YOLO Model Presets (`--yolo-preset`)
 
-### 2.4 Output Structure
+To avoid false positives (e.g. running NSFW genitalia detectors on all-ages illustrations) and isolate different visual domains (anime vs. real-world photography), the pipeline provides a built-in preset system:
+
+| Preset | Target Domain | Activated Models / Rules |
+|---|---|---|
+| **`anime-sfw`** *(Default)* | Anime all-ages illustrations | Eyes, mouth, jewelry, face, hair, accessories (`Eyes.pt`, `adetailer2dMouth_v10.pt`, `jewelryDetector_v021.pt`). Excludes genitalia/NSFW models. |
+| **`anime-nsfw`** (or `r18`) | Adult concepts & fine-grained anatomy | SFW features plus breasts, nipples, penis, genitalia (`breasts_seg.pt`, `nipples_v2_yolov11s-seg.pt`, `cockAndBallDetection2D_v20.pt`). |
+| **`real`** | Real-world photography | Real human face/body models (e.g. `yolov8n-face.pt`). Excludes 2D anime stylized models. |
+| **`all`** | Full exploration | Loads all valid `.pt` and `.onnx` models present in `models/ultralytics/`. |
+| **`auto`** | Mixed dataset batching | Automatically analyzes CLTagger tags: if explicit adult tags (`nude`, `naked`, `penis`, `nipples`, etc.) exceed threshold 0.35, activates `anime-nsfw`; otherwise activates `anime-sfw`. |
+
+```bash
+# Run with safe all-ages anime preset (default)
+.venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --yolo-preset anime-sfw
+
+# Run with adult/R18 anatomy preset
+.venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --yolo-preset anime-nsfw
+
+# Auto-detect preset per image based on tags
+.venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --yolo-preset auto
+
+# Manually override with specific models
+.venv/bin/python scripts/cl_gbc_pipeline.py "C:\path\to\image.png" --yolo-models Eyes.pt adetailer2dMouth_v10.pt
+```
+
+#### Preset Configuration (`models/ultralytics/presets.json`)
+
+You can customize or add your own presets by editing `models/ultralytics/presets.json` (or `configs/yolo_presets.json`):
+
+```json
+{
+  "presets": {
+    "anime-sfw": {
+      "description": "Anime all-ages illustrations",
+      "models": ["Eyes.pt", "adetailer2dMouth_v10.pt", "jewelryDetector_v021.pt"],
+      "include_patterns": ["*eye*", "*mouth*", "*face*", "*jewelry*", "*hair*", "*hand*"],
+      "exclude_patterns": ["*cock*", "*ball*", "*penis*", "*pussy*", "*vagina*", "*nipple*", "*cum*"]
+    },
+    "my-custom-preset": {
+      "models": ["Eyes.pt", "jewelryDetector_v021.pt"]
+    }
+  }
+}
+```
+
+### 2.4 Fine-Grained VLM Region Descriptions (`--describe-yolo`)
+
+By default, the pipeline automatically crops each YOLO-detected bounding box (with 15% contextual padding to retain facial/body alignment) and prompts the VLM concurrently to produce detailed visual captions and short phrases:
+
+- **Enabled by default**: `--describe-yolo`
+- **Disable for placeholder mode**: `--no-describe-yolo`
+- **Concurrency**: `--yolo-vlm-workers 4` (concurrent request slots matching `llama-server`)
+
+The generated descriptions are seamlessly integrated into the scene graph node under `descs` (`detailed_caption`, `short_caption`, and source model confidence) and linked hierarchically to the parent character vertex (e.g. `angelina_eyes_0` with `part of` edge).
+
+### 2.5 Modular Subpackage Architecture (`scripts/anime_pipeline/`)
+
+The pipeline is organized as a clean, decoupled Python subpackage under `scripts/anime_pipeline/`:
+
+- `cltagger.py`: Standalone ONNX runtime classifier for anime franchise & visual tags.
+- `yolo.py`: Ultralytics YOLO ensemble with preset filtering, NMS deduplication, and normalized bbox formatting.
+- `vlm_descriptor.py`: High-resolution localized patch extraction, structured prompting, and resilient JSON/reasoning parsers.
+- `graph_builder.py`: Hierarchical parent-child graph integration and fast prior graph generation.
+- `gbc_runner.py`: KohakuGBC configuration override generation, VLM pre-flight health probes, and error diagnostics.
+- `utils.py`: WSL/Windows cross-platform path normalization and recursive image collection.
+
+You can import and use any component independently:
+
+```python
+from scripts.anime_pipeline import (
+    StandaloneCLTagger,
+    UltralyticsEnsemble,
+    describe_yolo_detections,
+    run_cl_tagger,
+)
+```
+
+### 2.6 Output Structure
 
 Each run automatically creates a dedicated, isolated directory under `runs/`:
 - **Single image:** `runs/<image_name>_<YYYYMMDD_HHMMSS>/`

@@ -214,3 +214,4 @@ def describe_yolo_detections(
         results = list(executor.map(_describe_one, detections))
     print(f"[+] Described {len(results)} YOLO detection(s) in {time.time() - start_t:.1f}s")
     return results
+

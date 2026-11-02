@@ -152,3 +152,4 @@ def print_summary(graphs_file: Path) -> None:
                     print(f"  • {vid:20s}: {desc_text}")
 
     print("\n" + "=" * 70)
+
